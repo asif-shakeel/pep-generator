@@ -32,11 +32,11 @@ MODE = "generate"  # {"generate","validate"}
 # =========================
 # Paths & template
 # =========================
-BASE_DIR   = os.path.abspath(os.path.dirname(__file__))
-DATA_DIR   = os.path.join(BASE_DIR, "/Users/asif/Documents/nm24/data")
-OUTPUT_DIR = os.path.join(BASE_DIR, "/Users/asif/Documents/nm24/outputs")
-PLOT_DIR   = os.path.join(OUTPUT_DIR, "/Users/asif/Documents/nm24/plots")
-TRANS_DIR  = os.path.join(OUTPUT_DIR, "/Users/asif/Documents/nm24/transitions")
+BASE_DIR   = "/Users/asif/Documents/nm24" #os.path.abspath(os.path.dirname(__file__))
+DATA_DIR   = os.path.join(BASE_DIR, "data")
+OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
+PLOT_DIR   = os.path.join(OUTPUT_DIR, "plots")
+TRANS_DIR  = os.path.join(OUTPUT_DIR, "transitions")
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(TRANS_DIR, exist_ok=True)
@@ -67,9 +67,9 @@ TIME_RES_MIN     = 45              # bin size (minutes)
 # Files / plots / randomness (RESTORED)
 # =========================
 WRITE_GZIP             = False #  True  #   # legacy name; maps to COMPRESS_OUTPUTS
-WRITE_RAW              = False
+WRITE_RAW              = True # False
 WRITE_OD_AGGREGATE     = True
-SAVE_TRANSITIONS       = False
+SAVE_TRANSITIONS       = True
 VALIDATE_ON_GENERATE   = True
 MAKE_PLOTS             = False
 PLOT_TOP_ORIGINS       = 4
@@ -237,8 +237,28 @@ P_STAY_MAX  = 0.98
 # Stays (region-specific)
 # =========================
 # Baseline stickiness (center, periphery)
-P_STAY_BASE_MODE = (0.95, 0.05)  # tuple (center, periphery)
+P_STAY_BASE_MODE = (0.05, 0.95)  # tuple (center, periphery)
 ENABLE_CENTER_PERIPH_STAY = True
+
+# --- NEW: time-varying baseline schedules (piecewise linear, repeat daily) ---
+ENABLE_STAY_BASE_SCHEDULE = True  # master toggle
+
+
+# Runtime arrays (filled in generate())
+_CENTER_BASELINE_BY_BIN: np.ndarray | None = None
+_PERIPH_BASELINE_BY_BIN: np.ndarray | None = None
+
+CENTER_STAY_SCHEDULE = [
+    ("06:00", "08:00", 0.80),  # 0.95 -> 0.80 during AM
+    ("15:00", "20:00", 0.20),  # 0.80 -> 0.60 during PM
+    ("20:00", "22:30", 0.05),  # 0.60 -> 0.90 evening rebound
+]
+
+PERIPH_STAY_SCHEDULE = [
+    ("06:00", "10:00", 0.5),  # 0.05 -> 0.20 during AM
+    ("15:00", "20:00", 0.7),  # 0.20 -> 0.40 during PM
+    ("20:00", "22:30", 0.95),  # 0.40 -> 0.10 evening tighten
+]
 
 # =========================
 # λ modulation (additive mode)
@@ -541,23 +561,26 @@ def apply_mass_modulation(nodes, rkm_map, M_base: np.ndarray, minute_of_day: int
 # =========================
 def stay_probability_for_origin(g_j: float, minute_of_day: int) -> float:
     """
-    Regionalized version:
-    Each origin's base p_stay is chosen according to its g_j (centralness):
-      - center:   P_STAY_BASE_MODE[0]
-      - periphery: P_STAY_BASE_MODE[1]
-    Then modulated by s(t) * λ_stay * (2g-1) in either additive or multiplicative mode.
+    Time-varying baseline pst with optional center/periphery interpolation:
+      base_center[b], base_periph[b] built once per day.
+      base_pst = periph + g_j * (center - periph)   # smooth by centralness
+    Then λ-modulation (additive/multiplicative) with s(t) and (2g-1).
+    Final clamp to [0,1].
     """
-
     s = phase_s_of_minute(minute_of_day)
     center_vs_periph = (2.0 * g_j - 1.0)
 
-    # --- region-specific base ---
+    # --- baseline (scheduled) ---
     if ENABLE_CENTER_PERIPH_STAY:
-        base_center, base_periph = P_STAY_BASE_MODE
-        # g_j ∈ [0, 1] so we interpolate smoothly between periphery and center
+        # from precomputed arrays
+        bins_per_day = int(((WINDOW_END_HH - WINDOW_START_HH) * 60) // TIME_RES_MIN)
+        b = int((_minute_to_bin(minute_of_day)) % max(1, bins_per_day))
+        base_center = float(_CENTER_BASELINE_BY_BIN[b]) if _CENTER_BASELINE_BY_BIN is not None else float(P_STAY_BASE_MODE[0])
+        base_periph = float(_PERIPH_BASELINE_BY_BIN[b]) if _PERIPH_BASELINE_BY_BIN is not None else float(P_STAY_BASE_MODE[1])
         base_pst = base_periph + g_j * (base_center - base_periph)
     else:
-        base_pst = P_STAY_BASE
+        # legacy single baseline
+        base_pst = float(P_STAY_BASE)
 
     # --- modulation ---
     if ENABLE_ADDITIVE_LAMBDA:
@@ -566,6 +589,7 @@ def stay_probability_for_origin(g_j: float, minute_of_day: int) -> float:
         pst = base_pst * (1.0 + (LAMBDA_STAY * s) * center_vs_periph)
 
     return float(min(1.0, max(0.0, pst)))
+
 
 
 def diagnostic_ring_labels(nodes: List[str], rkm_map: Dict[str,float], n_bins: int) -> Dict[str,int]:
@@ -870,6 +894,76 @@ def apply_bias_to_masses(nodes: List[str], rkm_map: Dict[str,float], M_base: np.
     factor = 1.0 + lambda_dest * s * gvals
     M_mod  = M_base * factor
     return np.maximum(M_mod, 0.0)
+
+def _parse_hhmm(hhmm: str) -> int:
+    """Return minutes since midnight for 'HH:MM'."""
+    hh, mm = hhmm.split(":")
+    return int(hh) * 60 + int(mm)
+
+def _minute_to_bin(minute_of_day: int) -> int:
+    """Map minute_of_day to bin index in [0, bins_per_day)."""
+    rel = minute_of_day - WINDOW_START_HH * 60
+    return int(rel // TIME_RES_MIN)
+
+def _build_baseline_array_for_class(
+    initial_value: float,
+    segments: List[tuple[str, str, float]],
+    bins_per_day: int
+) -> np.ndarray:
+    """
+    Piecewise-linear schedule across the day, repeating daily.
+    - segments: list of (start_time, end_time, target_value), times as 'HH:MM'.
+    - The starting level of the first segment is the current level at its start bin.
+    - Gaps: hold the last value until next segment starts.
+    - Overlaps: later segments take precedence (applied in given order).
+    """
+    # Start flat at the initial value
+    arr = np.full(bins_per_day, float(initial_value), dtype=float)
+
+    # Convert to a mutable "current level by bin"
+    # We'll apply each segment in order; overlapping segments override bins they cover.
+    for (t0s, t1s, target) in segments or []:
+        t0 = _parse_hhmm(t0s)
+        t1 = _parse_hhmm(t1s)
+        # Normalize to [0, 24h) and support wrap
+        if t0 == t1:
+            # zero-length => treat as instant jump at t0
+            idx = _minute_to_bin(t0)
+            if 0 <= idx < bins_per_day:
+                arr[idx:] = float(target)  # jump for remainder of day
+            continue
+
+        # Helper to “paint” a single, non-wrapping interval
+        def _apply_one(lo_min: int, hi_min: int):
+            lo_bin = max(0, min(bins_per_day - 1, _minute_to_bin(lo_min)))
+            hi_bin = max(0, min(bins_per_day - 1, _minute_to_bin(hi_min - 1)))  # inclusive end
+            if hi_bin < lo_bin:
+                return
+            # Starting value at lo_bin (current arr)
+            start_val = float(arr[lo_bin])
+            end_val = float(target)
+            span = hi_bin - lo_bin
+            if span <= 0:
+                # single bin -> set to target
+                arr[lo_bin] = end_val
+                return
+            # Linear ramp from start_val -> end_val across [lo_bin..hi_bin]
+            ramp = np.linspace(start_val, end_val, span + 1)
+            arr[lo_bin:hi_bin + 1] = ramp
+
+            # Hold the end_val forward until another segment overrides it
+            if hi_bin + 1 < bins_per_day:
+                arr[hi_bin + 1 :] = end_val
+
+        if t0 < t1:
+            _apply_one(t0, t1)
+        else:
+            # wrap: [t0..24:00) and [00:00..t1)
+            _apply_one(t0, 24 * 60)
+            _apply_one(0, t1)
+
+    # Clamp to [0,1] for sanity (base only; final pst still clamped later)
+    return np.clip(arr, 0.0, 1.0)
 
 
 # =========================
@@ -1696,6 +1790,23 @@ def _safe_share(counts_or_sum: np.ndarray | float, total: int) -> np.ndarray | f
     denom = float(max(1, total))
     return counts_or_sum / denom
 
+def _reconcile_center_delta_vs_flows(tag: str):
+    daily_path = os.path.join(OUTPUT_DIR, f"pep_daily_balance_{tag}.csv")
+    agg_path   = os.path.join(OUTPUT_DIR, f"pep_population_aggregates_{tag}.csv")
+    if not (os.path.exists(daily_path) and os.path.exists(agg_path)):
+        warn("[RECON] missing files for reconciliation")
+        return
+    d = pd.read_csv(daily_path)
+    a = pd.read_csv(agg_path)
+    net = float(d["net_out_center"].sum())                 # out − in
+    cen = a.loc[a["group"]=="center_set"].iloc[0]
+    delta = float(cen["final_count_total"] - cen["initial_count_total"])
+    if abs(delta + net) > 1e-6:
+        warn(f"[RECON MISMATCH] center delta={delta:.0f}, -sum(net_out_center)={-net:.0f}, "
+             f"diff={delta + net:+.0f}")
+    else:
+        info("[RECON] OK: center delta equals -sum(net_out_center)")
+
 # =========================
 # validate()
 # =========================
@@ -1790,23 +1901,26 @@ def validate():
     else:
         info("[SKIP] model vs empirical compare (disabled)")
 
+    start_tag = pd.to_datetime(SWEEP_START_DATE).strftime("%Y%m%d")
+    end_tag   = pd.to_datetime(SWEEP_END_DATE).strftime("%Y%m%d")
+    tag = f"{start_tag}_{end_tag}_m{TIME_RES_MIN}"
     # Diagnostics: temporal/day-bin/daily balances
     if ENABLE_DIAG_TEMPORAL:
-        td_path = os.path.join(OUTPUT_DIR, "pep_temporal_diagnostics.csv")
+        td_path = os.path.join(OUTPUT_DIR, f"pep_temporal_diagnostics_{tag}.csv")
         write_pep_temporal_diagnostics(od, centers, td_path)
         info(f"[WRITE] temporal diagnostics: {td_path}")
     else:
         info("[SKIP] temporal diagnostics (disabled)")
 
     if ENABLE_DIAG_MEAN_BIN:
-        mb_path = os.path.join(OUTPUT_DIR, "pep_mean_bin_balance.csv")
+        mb_path = os.path.join(OUTPUT_DIR, f"pep_mean_bin_balance_{tag}.csv")
         write_pep_mean_bin_balance(od, centers,  mb_path)
         info(f"[WRITE] mean bin balance: {mb_path}")
     else:
         info("[SKIP] mean bin balance (disabled)")
 
     if ENABLE_DIAG_DAILY:
-        dl_path = os.path.join(OUTPUT_DIR, "pep_daily_balance.csv")
+        dl_path = os.path.join(OUTPUT_DIR, f"pep_daily_balance_{tag}.csv")
         write_pep_daily_balance(od, centers, dl_path)
         info(f"[WRITE] daily balance: {dl_path}")
     else:
@@ -1835,6 +1949,7 @@ def validate():
     else:
         warn("[PERIODIC] insufficient bins per day to compute L1.")
 
+    _reconcile_center_delta_vs_flows(tag)
     info("Validation complete.")
 
 # =========================
@@ -1843,10 +1958,21 @@ def validate():
 def generate():
     banner("PEP GENERATION")
     rng = np.random.default_rng(SEED)
-
-    # Time bins for one day (pattern)
     bins_per_day = int(((WINDOW_END_HH - WINDOW_START_HH) * 60) // TIME_RES_MIN)
     minutes_in_day = [WINDOW_START_HH*60 + b*TIME_RES_MIN for b in range(bins_per_day)]
+    # Time bins for one day (pattern)
+    # --- NEW: precompute time-varying stay baselines per bin (center/periphery) ---
+    global _CENTER_BASELINE_BY_BIN, _PERIPH_BASELINE_BY_BIN
+    if ENABLE_STAY_BASE_SCHEDULE and ENABLE_CENTER_PERIPH_STAY:
+        c0, p0 = P_STAY_BASE_MODE
+        _CENTER_BASELINE_BY_BIN = _build_baseline_array_for_class(c0, CENTER_STAY_SCHEDULE, bins_per_day)
+        _PERIPH_BASELINE_BY_BIN = _build_baseline_array_for_class(p0, PERIPH_STAY_SCHEDULE, bins_per_day)
+    else:
+        # flat baselines (either feature disabled or global non-regional mode)
+        c0, p0 = P_STAY_BASE_MODE
+        _CENTER_BASELINE_BY_BIN = np.full(bins_per_day, float(c0), dtype=float)
+        _PERIPH_BASELINE_BY_BIN = np.full(bins_per_day, float(p0), dtype=float)
+
     # Diagnostics collector
     neighbor_diag_rows = []  # (only used if ENABLE_NEIGHBOR_DIAGNOSTICS)
 
@@ -2015,7 +2141,11 @@ def generate():
             "center_selection_mode": CENTER_SELECTION_MODE,
             "center_selection_meta": center_meta,
             "center_ref_latlon": ref_latlon,
-
+            "stay_schedule_enabled": bool(ENABLE_STAY_BASE_SCHEDULE),
+            "stay_initial_baselines": {"center": float(P_STAY_BASE_MODE[0]), "periphery": float(P_STAY_BASE_MODE[1])},
+            "stay_center_segments": CENTER_STAY_SCHEDULE,
+            "stay_periphery_segments": PERIPH_STAY_SCHEDULE,
+            "time_res_min": int(TIME_RES_MIN),  # already there, but make sure it is
         },
     )
 
@@ -2246,6 +2376,21 @@ def generate():
     start_tag = pd.to_datetime(SWEEP_START_DATE).strftime("%Y%m%d")
     end_tag   = pd.to_datetime(SWEEP_END_DATE).strftime("%Y%m%d")
     tag = f"{start_tag}_{end_tag}_m{TIME_RES_MIN}"
+
+    # --- NEW: emit daily baseline schedule for debug ---
+    try:
+        labs = [f"{(WINDOW_START_HH*60 + b*TIME_RES_MIN)//60:02d}:{(WINDOW_START_HH*60 + b*TIME_RES_MIN)%60:02d}" for b in range(bins_per_day)]
+        sched_df = pd.DataFrame({
+            "_bin_idx": np.arange(bins_per_day, dtype=int),
+            "_bin_lab": labs,
+            "center_baseline": _CENTER_BASELINE_BY_BIN if _CENTER_BASELINE_BY_BIN is not None else [],
+            "periph_baseline": _PERIPH_BASELINE_BY_BIN if _PERIPH_BASELINE_BY_BIN is not None else [],
+        })
+        sched_path = os.path.join(OUTPUT_DIR, f"pep_stay_baseline_schedule_{tag}.csv")
+        sched_df.to_csv(sched_path, index=False)
+        info(f"[WRITE] stay baseline schedule (per bin): {sched_path}")
+    except Exception as _e:
+        warn(f"[STAY-SCHED] failed to write schedule CSV: {_e}")
 
     raw_cols = ["PEP_ID", START_COL, END_COL, DATE_COL, TIME_COL, "length_m"]
     pep_df = pd.DataFrame(out_rows, columns=raw_cols)
