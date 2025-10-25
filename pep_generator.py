@@ -196,13 +196,11 @@ RADIAL_INIT_NORMALIZE = "mean1"   # {"mean1","none"}
 
 
 
-# =========================
-# Per-bin totals (RESTORED controllers)
-# =========================
-TOTAL_PER_BIN_FIXED  = 12000       # **total number of agents** in the system
-SERIES_SOURCE        = "first_day" # {"first_day"}
-SERIES_SPEC          = (0, 60, 24)  # (offset, scale, hours)
-SERIES_HOUR_SET      = None         # optional explicit hour multipliers dict {hour:int -> mult:float}
+# --- Per-bin population control ---
+# {"fixed", "template_mean", "template_mean_day0"}
+TOTAL_PER_BIN_MODE  = "fixed"
+TOTAL_PER_BIN_FIXED = 12000  # used when mode == "fixed"
+
 
 
 # --- Auto-tune options for saturation radii (center/periphery) ---
@@ -273,6 +271,7 @@ LAMBDA_STAY = 0.10   # stay modulation: center sticky in AM, periphery sticky in
 # =========================
 # RADIAL INITIALIZATION (periphery-heavy start)
 # =========================
+ 
 RADIAL_INIT_ENABLE_MASS = True
 RADIAL_INIT_ENABLE_X    = True
 RADIAL_INIT_INNER_KM    = 10.0
@@ -306,10 +305,7 @@ CELL_EDGE_KM_EST = 1.2
 # =========================
 TOTAL_PER_BIN_MODE   = "fixed"
 TOTAL_PER_BIN_FIXED  = 12000
-MATCH_PER_BIN_TARGET = False
-SERIES_SOURCE        = "first_day"
-SERIES_SPEC          = (0, 60, 24)
-SERIES_HOUR_SET      = None
+
 
 
 
@@ -1644,11 +1640,72 @@ def generate():
         },
     )
 
-    # Agent pool (ALL agents)
+
+    
+    # Build a per-bin totals frame from the template for TOTAL_PER_BIN_MODE
+    # This assumes dfw has TIME_COL and (optionally) COUNT_COL.
+    template_df = dfw.copy()
+    if TIME_COL not in template_df.columns:
+        raise RuntimeError("Template is missing TIME_COL; cannot compute per-bin means for TOTAL_PER_BIN_MODE")
+
+    # Parse time and keep only rows inside the configured window (hours)
+    template_df["_t0"] = pd.to_datetime(template_df[TIME_COL], errors="coerce", utc=False)
+    template_df = template_df[
+        (template_df["_t0"].dt.hour >= WINDOW_START_HH) &
+        (template_df["_t0"].dt.hour <  WINDOW_END_HH)
+    ].copy()
+
+    # Compute bin index for the configured TIME_RES_MIN
+    template_df["bin"] = ((template_df["_t0"].dt.hour*60 + template_df["_t0"].dt.minute) - WINDOW_START_HH*60) // TIME_RES_MIN
+    template_df["local_date"] = template_df["_t0"].dt.floor("D")
+
+    # Determine trips per row
+    if COUNT_COL in template_df.columns:
+        template_df["_trips"] = template_df[COUNT_COL].astype(float)
+    else:
+        template_df["_trips"] = 1.0  # treat each row as one trip if no counts
+
+    # Aggregate total trips per (day, bin)
+    template_bin_totals = (
+        template_df.groupby(["local_date", "bin"], as_index=False)["_trips"].sum()
+        .rename(columns={"_trips": "trip_count"})
+    )
+
+
+
+    # Agent pool (ALL agents) -- derive POOL_SIZE from TOTAL_PER_BIN_MODE
     N = len(nodes)
     node_to_idx = {g:i for i,g in enumerate(nodes)}
-    POOL_SIZE = int(TOTAL_PER_BIN_FIXED)   # total number of agents
+
+    if TOTAL_PER_BIN_MODE == "fixed":
+        total_per_bin = float(TOTAL_PER_BIN_FIXED)
+        info(f"[TOTALS] Fixed total per bin: {total_per_bin:.0f}")
+
+    elif TOTAL_PER_BIN_MODE == "template_mean":
+        if template_bin_totals.empty:
+            raise RuntimeError("[TOTALS] template_bin_totals is empty; cannot compute template_mean")
+        # mean across all days and bins of total trips per bin
+        total_per_bin = float(template_bin_totals.groupby("bin")["trip_count"].sum().mean())
+        info(f"[TOTALS] Using mean total per bin from full template window: {total_per_bin:.0f}")
+
+    elif TOTAL_PER_BIN_MODE == "template_mean_day0":
+        if template_bin_totals.empty:
+            raise RuntimeError("[TOTALS] template_bin_totals is empty; cannot compute template_mean_day0")
+        day0 = template_bin_totals["local_date"].min()
+        df0 = template_bin_totals.loc[template_bin_totals["local_date"] == day0]
+        if df0.empty:
+            warn("[TOTALS] No rows for day0; falling back to full template mean")
+            total_per_bin = float(template_bin_totals.groupby("bin")["trip_count"].sum().mean())
+        else:
+            total_per_bin = float(df0.groupby("bin")["trip_count"].sum().mean())
+        info(f"[TOTALS] Using mean total per bin from day0 ({day0.date()}): {total_per_bin:.0f}")
+
+    else:
+        raise ValueError(f"Unknown TOTAL_PER_BIN_MODE: {TOTAL_PER_BIN_MODE}")
+
+    POOL_SIZE = max(1, int(round(total_per_bin)))
     agent_ids = np.array([f"P{(k+1):06d}" for k in range(POOL_SIZE)], dtype=object)
+
 
     # initial positions from x0
     agent_state = rng.choice(N, size=POOL_SIZE, p=x0, replace=True)
