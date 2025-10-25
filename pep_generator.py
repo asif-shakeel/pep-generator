@@ -58,7 +58,7 @@ COUNT_COL = "trip_count"
 # Sweep window & time resolution
 # =========================
 SWEEP_START_DATE = "2019-07-01"   # inclusive
-SWEEP_END_DATE   = "2019-09-30"   # inclusive
+SWEEP_END_DATE   = "2019-07-10"   # inclusive
 WINDOW_START_HH  = 0               # inclusive
 WINDOW_END_HH    = 24              # exclusive
 TIME_RES_MIN     = 45              # bin size (minutes)
@@ -129,23 +129,15 @@ ENABLE_NEIGHBOR_DIAGNOSTICS = False  # default False to preserve current behavio
 # =========================
 # Distance sampling (ring-aware truncated lognormal)
 # =========================
-CELL_EDGE_KM_EST   = 4.9
-CELL_DIAG_KM_EST   = CELL_EDGE_KM_EST * math.sqrt(2.0)
-SELF_MAX_PERIM_KM  = 4.0 * CELL_EDGE_KM_EST
-R1_MAX_KM          = CELL_DIAG_KM_EST
-R2_MIN_KM          = 0.75 * CELL_EDGE_KM_EST
-R2_MAX_KM          = 2.0 * CELL_DIAG_KM_EST
-LN_MEDIANS = {0: 0.25, 1: 0.9, 2: 1.8}
-LN_SIGMA   = 0.55
+# --- Pairwise distance envelopes for LATTICE mode (optional; default OFF) ---
+ENABLE_PAIRWISE_DISTANCE_ENVELOPES = True   # preserves current behavior when False
 
 # --- Optional auto-median tuning for hop-distance sampling (default OFF; backward compatible) ---
 ENABLE_AUTO_DISTANCE_MEDIANS = False          # leave False to preserve exact current behavior
 AUTO_DISTANCE_MEDIAN_STRATEGY = "geom_bounds" # {"geom_bounds","empirical_neighbors"}
 AUTO_LN_SIGMA = None                          # if set (e.g., 0.35), overrides LN_SIGMA when auto is enabled
-ENABLE_UNIFORM_DISTANCE_SAMPLING = False
+ENABLE_UNIFORM_DISTANCE_SAMPLING = True
 
-# --- Pairwise distance envelopes for LATTICE mode (optional; default OFF) ---
-ENABLE_PAIRWISE_DISTANCE_ENVELOPES = True   # preserves current behavior when False
 
 
 # Self-loop envelope convention:
@@ -207,7 +199,7 @@ TOTAL_PER_BIN_FIXED = 12000  # used when mode == "fixed"
 AUTO_TUNE_SAT_RADII = True          # enable auto tuning
 AUTO_TUNE_MODE      = "floor"       # {"floor","replace"}
 AUTO_PERIPH_Q       = 0.92          # percentile of all r_km for periphery plateau
-AUTO_CENTER_PAD_KM  = 0.5 * CELL_EDGE_KM_EST  # cushion added beyond furthest center
+
 
 # Optional hard overrides (None = unused)
 RC_OVERRIDE_KM = None
@@ -245,68 +237,6 @@ DIAGNOSTIC_RING_BINS = 8
 
 
 
-# TWEAKS
-
-# =========================
-# TEMPORAL MODULATION & HOURS
-# =========================
-AM_HOURS_SET     = {6, 7, 8, 9, 10}               # AM inflow
-MIDDAY_HOURS_SET = {11, 12, 13}                   # midday flat
-PM_HOURS_SET     = {14, 15, 16, 17, 18, 19, 20, 21}  # PM outflow
-
-# =========================
-# STAY BEHAVIOR (no hourly multipliers)
-# =========================
-P_STAY_BASE = 0.80
-P_STAY_HOURLY_MULT = {}
-P_STAY_CENTER_BY_HOUR = {}
-P_STAY_PERIPH_BY_HOUR = {}
-
-# =========================
-# LAMBDA MODULATION (core of temporal dynamics)
-# =========================
-LAMBDA_DEST = 0.35   # destination attraction: center pull in AM, periphery pull in PM
-LAMBDA_STAY = 0.10   # stay modulation: center sticky in AM, periphery sticky in PM
-
-# =========================
-# RADIAL INITIALIZATION (periphery-heavy start)
-# =========================
- 
-RADIAL_INIT_ENABLE_MASS = True
-RADIAL_INIT_ENABLE_X    = True
-RADIAL_INIT_INNER_KM    = 10.0
-RADIAL_INIT_OUTER_KM    = 35.0
-RADIAL_INIT_CENTER_MULT = 0.85
-RADIAL_INIT_PERIPH_MULT = 1.20
-RADIAL_INIT_NORMALIZE   = "mean1"
-
-# =========================
-# AUTO-TUNE SATURATION RADII (affects g(r) profile)
-# =========================
-AUTO_TUNE_SAT_RADII = True
-AUTO_TUNE_MODE      = "floor"
-AUTO_PERIPH_Q       = 0.90
-AUTO_CENTER_PAD_KM  = 2.0
-RC_OVERRIDE_KM      = None
-RP_OVERRIDE_KM      = None
-
-# =========================
-# NEIGHBORHOOD CONFIG
-# =========================
-NEIGHBOR_SCHEME    = "lattice"  # or "knn"
-NEIGHBOR_K         = 25
-NEIGHBOR_INNER_K   = 9
-NEIGHBOR_MAX_RINGS = 2
-
-CELL_EDGE_KM_EST = 1.2
-
-# =========================
-# TOTAL AGENTS & BIN CONFIG
-# =========================
-TOTAL_PER_BIN_MODE   = "fixed"
-TOTAL_PER_BIN_FIXED  = 12000
-
-
 
 
 # =========================
@@ -324,6 +254,36 @@ def warn(msg: str) -> None:
 # =========================
 # Time helpers & λ schedule
 # =========================
+def _edge_km_from_precision(p: int) -> float:
+    # Mid-latitude averages; good enough for our purposes
+    # (width/height are similar by p>=5; we use a single edge estimate)
+    table = {
+        4: 19.5,
+        5: 4.9,
+        6: 1.2,
+        7: 0.153,
+        8: 0.038,
+    }
+    return float(table.get(int(p), 4.9))  # fallback to 5-char default
+
+# =========================
+# Distance sampling (derived from geohash precision)
+# =========================
+CELL_EDGE_KM_EST   = _edge_km_from_precision(GEOHASH_PRECISION)
+CELL_DIAG_KM_EST   = CELL_EDGE_KM_EST * math.sqrt(2.0)
+SELF_MAX_PERIM_KM  = 4.0 * CELL_EDGE_KM_EST
+R1_MAX_KM          = CELL_DIAG_KM_EST
+R2_MIN_KM          = 0.75 * CELL_EDGE_KM_EST
+R2_MAX_KM          = 2.0 * CELL_DIAG_KM_EST
+AUTO_CENTER_PAD_KM  = 0.5 * CELL_EDGE_KM_EST  # cushion added beyond furthest center
+
+LN_MEDIANS = {
+    0: 0.25 * CELL_EDGE_KM_EST,
+    1: 0.9  * CELL_EDGE_KM_EST,
+    2: 1.8  * CELL_EDGE_KM_EST,
+}
+LN_SIGMA = 0.55
+
 def build_time_bins_for_window(d_start: str, d_end: str, hh_start: int, hh_end: int, res_min: int) -> List[pd.Timestamp]:
     ds = pd.to_datetime(d_start)
     de = pd.to_datetime(d_end)
@@ -1004,6 +964,7 @@ def _auto_distance_medians_from_neighbors(nb_dist: np.ndarray, inner_k: int) -> 
     m1 = robust_geom_median(d_inner, b1)
     m2 = robust_geom_median(d_outer, b2)
     return m1, m2
+
 
 # =========================
 # Linear algebra
