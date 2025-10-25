@@ -33,10 +33,10 @@ MODE = "generate"  # {"generate","validate"}
 # Paths & template
 # =========================
 BASE_DIR   = os.path.abspath(os.path.dirname(__file__))
-DATA_DIR   = os.path.join(BASE_DIR, "data")
-OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
-PLOT_DIR   = os.path.join(OUTPUT_DIR, "plots")
-TRANS_DIR  = os.path.join(OUTPUT_DIR, "transitions")
+DATA_DIR   = os.path.join(BASE_DIR, "/Users/asif/Documents/nm24/data")
+OUTPUT_DIR = os.path.join(BASE_DIR, "/Users/asif/Documents/nm24/outputs")
+PLOT_DIR   = os.path.join(OUTPUT_DIR, "/Users/asif/Documents/nm24/plots")
+TRANS_DIR  = os.path.join(OUTPUT_DIR, "/Users/asif/Documents/nm24/transitions")
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(TRANS_DIR, exist_ok=True)
@@ -58,7 +58,7 @@ COUNT_COL = "trip_count"
 # Sweep window & time resolution
 # =========================
 SWEEP_START_DATE = "2019-07-01"   # inclusive
-SWEEP_END_DATE   = "2019-07-14"   # inclusive
+SWEEP_END_DATE   = "2019-09-30"   # inclusive
 WINDOW_START_HH  = 0               # inclusive
 WINDOW_END_HH    = 24              # exclusive
 TIME_RES_MIN     = 45              # bin size (minutes)
@@ -66,9 +66,10 @@ TIME_RES_MIN     = 45              # bin size (minutes)
 # =========================
 # Files / plots / randomness (RESTORED)
 # =========================
-WRITE_GZIP             = False   # legacy name; maps to COMPRESS_OUTPUTS
+WRITE_GZIP             = True  # False #   # legacy name; maps to COMPRESS_OUTPUTS
+WRITE_RAW              = False
 WRITE_OD_AGGREGATE     = True
-SAVE_TRANSITIONS       = True
+SAVE_TRANSITIONS       = False
 VALIDATE_ON_GENERATE   = True
 MAKE_PLOTS             = False
 PLOT_TOP_ORIGINS       = 4
@@ -84,21 +85,6 @@ COMPRESS_OUTPUTS = WRITE_GZIP
 GEOHASH_PRECISION = 5
 
 # =========================
-# Gravity & distance model (RESTORED semantics)
-# =========================
-ALPHA          = 0.70    # mass exponent (maps to ALPHA_MASS)
-BETA           = 2.8     # power distance decay exponent
-USE_EXP_DECAY  = False   # if True, use exp(-d / DIST_SCALE_KM)
-DIST_SCALE_KM  = 5.0     # only used when USE_EXP_DECAY=True ⇒ gamma = 1/DIST_SCALE_KM
-HARD_CUTOFF_KM = None    # if not None, neighbors with d > cutoff have 0 weight (except self)
-
-# Derived internal names
-ALPHA_MASS  = ALPHA
-BETA_DIST   = BETA
-GAMMA_DECAY = 0.0 if not USE_EXP_DECAY else (0.0 if DIST_SCALE_KM in (None, 0) else 1.0/float(DIST_SCALE_KM))
-DIST_DECAY_MODE = "exp" if USE_EXP_DECAY else "power"
-
-# =========================
 # Region filter (RESTORED & WIRED)
 # =========================
 COUNTRY = "Mexico"
@@ -111,62 +97,34 @@ BUFFER_KM_BY_COUNTRY = {"Colombia":10.0, "Indonesia":10.0, "Mexico":10.0, "India
 USE_REGION_FILTER = True
 REGION_MEMBERSHIP_MODE = "intersects"  # {"intersects","within"}; for points, both behave the same
 
-# =========================
-# λ-based AM/PM modulation with single g(r) in KM
-# =========================
-AM_HOURS_SET      = {6, 9}            # AM ramp: -1 → +1
-MIDDAY_HOURS_SET  = {12}              # plateau: +1
-PM_HOURS_SET      = {15, 18, 21}      # PM ramp: +1 → -1
 
-LAMBDA_DEST = 0.35  # replaces RING_LAMBDA_DEST
-LAMBDA_STAY = 0.00  # replaces RING_LAMBDA_ORIG (kept off by default to match original)
-
-R_CENTER_SAT_KM = 8    # r_c: center plateau radius (km)
-R_PERIPH_SAT_KM = 30.0   # r_p: periphery plateau radius (km)
-
-
-
-# Optional diagnostics-only bucketing for reports (does not affect g(r))
-DIAGNOSTIC_RING_BINS = 8
 
 # =========================
-# Centers & stays (RESTORED)
+# Gravity & distance model (RESTORED semantics)
+# =========================
+ALPHA          = 0.70    # mass exponent (maps to ALPHA)
+BETA           = 2.8     # power distance decay exponent
+USE_EXP_DECAY  = False   # if True, use exp(-d / DIST_SCALE_KM)
+DIST_SCALE_KM  = 5.0     # only used when USE_EXP_DECAY=True ⇒ gamma = 1/DIST_SCALE_KM
+HARD_CUTOFF_KM = None    # if not None, neighbors with d > cutoff have 0 weight (except self)
+
+# Derived internal names
+GAMMA_DECAY = 0.0 if not USE_EXP_DECAY else (0.0 if DIST_SCALE_KM in (None, 0) else 1.0/float(DIST_SCALE_KM))
+DIST_DECAY_MODE = "exp" if USE_EXP_DECAY else "power"
+
+# =========================
+# Center, Neighbor scheme & parameters
 # =========================
 CENTER_K = 6
-P_STAY_BASE = 0.60
-STAY_MULT_BY_HOUR     = {}  # neutral unless overridden (legacy name)
-P_STAY_HOURLY_MULT    = STAY_MULT_BY_HOUR  # alias used internally
-P_STAY_CENTER_BY_HOUR = {}  # optional: per-hour multiplier for center tiles only
-P_STAY_PERIPH_BY_HOUR = {}  # optional: per-hour multiplier for periphery tiles only
-
-# =========================
-# Neighbor scheme & parameters (RESTORED defaults)
-# =========================
 NEIGHBOR_SCHEME     = "lattice"   # {"knn","lattice"}
-NEIGHBOR_K          = 24          # hard cap
-NEIGHBOR_INNER_K    = 8           # ring-1 threshold for inner boost & hop labels
+NEIGHBOR_K          = 25          # hard cap
+NEIGHBOR_INNER_K    = 9          # ring-1 threshold for inner boost & hop labels
 NEIGHBOR_BOOST      = 8.0         # multiplier for inner neighbors (excluding self)
 NEIGHBOR_MAX_RINGS  = 2           # lattice mode: max rings to include
 
-# =========================
-# Per-bin totals (RESTORED controllers)
-# =========================
-MATCH_PER_BIN_TARGET = False
-TOTAL_PER_BIN_MODE   = "fixed"     # {"fixed","template_mean","series"}
-TOTAL_PER_BIN_FIXED  = 12000       # **total number of agents** in the system
-SERIES_SOURCE        = "first_day" # {"first_day"}
-SERIES_SPEC          = (0, 60, 24)  # (offset, scale, hours)
-SERIES_HOUR_SET      = None         # optional explicit hour multipliers dict {hour:int -> mult:float}
+# --- Optional neighbor diagnostics (counts of destinations used per origin & bin) ---
+ENABLE_NEIGHBOR_DIAGNOSTICS = False  # default False to preserve current behavior
 
-# =========================
-# Initial mass & initial state configuration
-# =========================
-# Initial mass for destinations (hourly base BEFORE Markov normalization)
-MASS_INIT_MODE     = "template_window_mean"  # {"flat","template_inflow_day0","template_window_mean"}
-MASS_INIT_HOUR_SET = None  # optional: restrict window mean to these hours (set[int])
-
-# Initial state (starting distribution over origins for agents)
-INIT_X_MODE = "template_inflow_day0"  # {"flat","template_inflow_day0","template_window_mean","stationary_meanP","periodic_fixed_point"}
 
 # =========================
 # Distance sampling (ring-aware truncated lognormal)
@@ -180,6 +138,72 @@ R2_MAX_KM          = 2.0 * CELL_DIAG_KM_EST
 LN_MEDIANS = {0: 0.25, 1: 0.9, 2: 1.8}
 LN_SIGMA   = 0.55
 
+# --- Optional auto-median tuning for hop-distance sampling (default OFF; backward compatible) ---
+ENABLE_AUTO_DISTANCE_MEDIANS = False          # leave False to preserve exact current behavior
+AUTO_DISTANCE_MEDIAN_STRATEGY = "geom_bounds" # {"geom_bounds","empirical_neighbors"}
+AUTO_LN_SIGMA = None                          # if set (e.g., 0.35), overrides LN_SIGMA when auto is enabled
+ENABLE_UNIFORM_DISTANCE_SAMPLING = False
+
+# --- Pairwise distance envelopes for LATTICE mode (optional; default OFF) ---
+ENABLE_PAIRWISE_DISTANCE_ENVELOPES = True   # preserves current behavior when False
+
+
+# Self-loop envelope convention:
+# - "single_diag": max = sqrt(2) * CELL_EDGE_KM_EST
+# - "double_diag": max = 2 * sqrt(2) * CELL_EDGE_KM_EST (allows there-and-back in a bin)
+SELF_DISTANCE_MODE = "single_diag"           # {"single_diag","double_diag"}
+
+# (Advanced) Persist the precomputed envelopes for transparency/debugging
+DUMP_PAIRWISE_ENVELOPES_JSON = False
+
+
+
+
+# --- Diagnostics toggles (default ON to keep current behavior) ---
+ENABLE_DIAG_MODEL_EMP_COMPARE = False   # pep_model_empirical_compare.csv
+ENABLE_DIAG_TEMPORAL          = False   # pep_temporal_diagnostics.csv
+ENABLE_DIAG_MEAN_BIN          = True   # pep_mean_bin_balance.csv
+ENABLE_DIAG_DAILY             = True   # pep_daily_balance.csv
+
+
+# =========================
+# Initial mass & initial state configuration
+# =========================
+# Initial mass for destinations (hourly base BEFORE Markov normalization)
+MASS_INIT_MODE     = "flat" #"template_window_mean"  # {"flat","template_inflow_day0","template_window_mean"}
+MASS_INIT_HOUR_SET = None  # optional: restrict window mean to these hours (set[int])
+
+# Initial state (starting distribution over origins for agents)
+INIT_X_MODE = "flat" # "template_inflow_day0"  # {"flat","template_inflow_day0","template_window_mean","stationary_meanP","periodic_fixed_point"}
+
+# --- Radial initialization (optional; defaults OFF to preserve behavior) ---
+RADIAL_INIT_ENABLE_MASS = False     # If True, reshape initial masses by a radial profile
+RADIAL_INIT_ENABLE_X    = False     # If True, reshape initial state x by a radial profile
+
+# Piecewise profile parameters (km)
+RADIAL_INIT_INNER_KM = 10.0   # flat "center" plateau radius
+RADIAL_INIT_OUTER_KM = 35.0   # flat "periphery" plateau radius
+
+# Multipliers at plateaus; linear interpolation between inner and outer
+# Example: center heavier than periphery -> (1.4, 0.8) ; for the opposite, flip them.
+RADIAL_INIT_CENTER_MULT  = 1.0
+RADIAL_INIT_PERIPH_MULT  = 1.0
+
+# Normalization choice after applying radial multipliers
+# "mean1" → rescale vector to have mean 1 (for masses) or sum 1 (for x, done separately)
+# "none"  → no rescale (rarely useful)
+RADIAL_INIT_NORMALIZE = "mean1"   # {"mean1","none"}
+
+
+
+# =========================
+# Per-bin totals (RESTORED controllers)
+# =========================
+TOTAL_PER_BIN_FIXED  = 12000       # **total number of agents** in the system
+SERIES_SOURCE        = "first_day" # {"first_day"}
+SERIES_SPEC          = (0, 60, 24)  # (offset, scale, hours)
+SERIES_HOUR_SET      = None         # optional explicit hour multipliers dict {hour:int -> mult:float}
+
 
 # --- Auto-tune options for saturation radii (center/periphery) ---
 AUTO_TUNE_SAT_RADII = True          # enable auto tuning
@@ -191,60 +215,103 @@ AUTO_CENTER_PAD_KM  = 0.5 * CELL_EDGE_KM_EST  # cushion added beyond furthest ce
 RC_OVERRIDE_KM = None
 RP_OVERRIDE_KM = None
 
-# # ====== TWEAKS: stronger AM/PM tides while keeping balance ======
-# LAMBDA_DEST = 1.0        # big amplitude (0.9–1.2 is a good search range)
 
-# # Steeper center vs periphery contrast
-# R_CENTER_SAT_KM  = 1.0
-# R_PERIPH_SAT_KM  = 30.0
+# --- Temporal ramp sets for lambda modulation ---
+AM_HOURS_SET     = {6, 7, 8, 9, 10}           # morning inflow ramp
+MIDDAY_HOURS_SET = {11, 12, 13}   # midday plateau
+PM_HOURS_SET     = {14, 15, 16, 17, 18, 19, 20, 21}  # evening outflow ramp
 
-# # More willingness to move
-# P_STAY_BASE = 0.40
-# LAMBDA_STAY = 0.00   # keep simple; use hourly multipliers instead
+# =========================
+# Stays
+# =========================
+P_STAY_BASE = 0.80   # baseline stickiness for all tiles
 
-# # Periphery moves more in AM, settles more in PM; centers linger a touch in AM/midday
-# P_STAY_PERIPH_BY_HOUR = {6:0.75, 7:0.75, 8:0.75, 9:0.80, 15:1.20, 16:1.25, 17:1.25, 18:1.20, 21:1.15}
-# P_STAY_CENTER_BY_HOUR = {8:1.10, 9:1.10, 12:1.05}
-
-# # Make long jumps feasible and masses matter more
-# NEIGHBOR_K   = 64
-# BETA         = 2.0     # or: USE_EXP_DECAY=True; DIST_SCALE_KM=10.0
-# ALPHA        = 0.90
-# # USE_EXP_DECAY = True
-# # DIST_SCALE_KM = 10.0
-# # ================================================================
+# =========================
+# λ-based AM/PM modulation with single g(r) in KM
+# =========================
 
 
-# ==== TWEAKS: drive long-run concentration to center (~80% target) ====
-# Turn off diurnal bias while we shape the long-run drift.
-LAMBDA_DEST = 0.0
-LAMBDA_STAY = 0.0
 
-# Keep people moving overall so the drift can manifest.
-P_STAY_BASE = 0.25   # lower base -> more movement per bin
+LAMBDA_DEST = 0.35   # controls time-varying destination attraction
+LAMBDA_STAY = 0.05   # small retention slope (optional)
 
-# MUCH leakier periphery, stickier center, but avoid hitting 0.95 frequently
-# Effective examples: center pst ≈ 0.25 * 1.40 = 0.35; periphery pst ≈ 0.25 * 0.12 = 0.03
-P_STAY_CENTER_BY_HOUR  = {h: 1.40 for h in range(24)}   # modest >1, not saturating
-P_STAY_PERIPH_BY_HOUR  = {h: 0.12 for h in range(24)}   # much lower, strong leak
+R_CENTER_SAT_KM = 10.0   # r_c: center plateau radius (km)
+R_PERIPH_SAT_KM = 35.0   # r_p: periphery plateau radius (km)
 
-# Strengthen mass attraction & reduce distance penalty so center wins multinomials
-ALPHA      = 1.30     # mass sensitivity up (big destinations win more)
-BETA       = 1.50     # distance penalty down (center visible from farther out)
-NEIGHBOR_K = 96       # many options -> center is in range from most tiles
-HARD_CUTOFF_KM = None
 
-# Start from data so you can see the drift
-INIT_X_MODE     = "template_inflow_day0"
-MASS_INIT_MODE  = "template_window_mean"
-# If template has bigger center inflow in business hours, this emphasizes it:
-# MASS_INIT_HOUR_SET = set(range(6, 20))  # optional
 
-# If you also want a larger "center set" for the metric itself:
-# CENTER_K = 8   # optional; makes the 'center_set' aggregate cover more tiles
+# Optional diagnostics-only bucketing for reports (does not affect g(r))
+DIAGNOSTIC_RING_BINS = 8
 
-# Optional (only if you want the center set to be a bit larger):
-CENTER_K = 8  # (default 6) expanding the “center set” can help reach 80% faster
+
+
+
+
+# TWEAKS
+
+# =========================
+# TEMPORAL MODULATION & HOURS
+# =========================
+AM_HOURS_SET     = {6, 7, 8, 9, 10}               # AM inflow
+MIDDAY_HOURS_SET = {11, 12, 13}                   # midday flat
+PM_HOURS_SET     = {14, 15, 16, 17, 18, 19, 20, 21}  # PM outflow
+
+# =========================
+# STAY BEHAVIOR (no hourly multipliers)
+# =========================
+P_STAY_BASE = 0.80
+P_STAY_HOURLY_MULT = {}
+P_STAY_CENTER_BY_HOUR = {}
+P_STAY_PERIPH_BY_HOUR = {}
+
+# =========================
+# LAMBDA MODULATION (core of temporal dynamics)
+# =========================
+LAMBDA_DEST = 0.35   # destination attraction: center pull in AM, periphery pull in PM
+LAMBDA_STAY = 0.10   # stay modulation: center sticky in AM, periphery sticky in PM
+
+# =========================
+# RADIAL INITIALIZATION (periphery-heavy start)
+# =========================
+RADIAL_INIT_ENABLE_MASS = True
+RADIAL_INIT_ENABLE_X    = True
+RADIAL_INIT_INNER_KM    = 10.0
+RADIAL_INIT_OUTER_KM    = 35.0
+RADIAL_INIT_CENTER_MULT = 0.85
+RADIAL_INIT_PERIPH_MULT = 1.20
+RADIAL_INIT_NORMALIZE   = "mean1"
+
+# =========================
+# AUTO-TUNE SATURATION RADII (affects g(r) profile)
+# =========================
+AUTO_TUNE_SAT_RADII = True
+AUTO_TUNE_MODE      = "floor"
+AUTO_PERIPH_Q       = 0.90
+AUTO_CENTER_PAD_KM  = 2.0
+RC_OVERRIDE_KM      = None
+RP_OVERRIDE_KM      = None
+
+# =========================
+# NEIGHBORHOOD CONFIG
+# =========================
+NEIGHBOR_SCHEME    = "lattice"  # or "knn"
+NEIGHBOR_K         = 25
+NEIGHBOR_INNER_K   = 9
+NEIGHBOR_MAX_RINGS = 2
+
+CELL_EDGE_KM_EST = 1.2
+
+# =========================
+# TOTAL AGENTS & BIN CONFIG
+# =========================
+TOTAL_PER_BIN_MODE   = "fixed"
+TOTAL_PER_BIN_FIXED  = 12000
+MATCH_PER_BIN_TARGET = False
+SERIES_SOURCE        = "first_day"
+SERIES_SPEC          = (0, 60, 24)
+SERIES_HOUR_SET      = None
+
+
 
 # =========================
 # Logging helpers
@@ -282,41 +349,27 @@ def _hour_bounds_from_set(H: set[int]) -> Tuple[Optional[int],Optional[int]]:
     return int(min(H)), int(max(H))
 
 def phase_s_of_minute(minute_of_day: int) -> float:
+    """
+    Returns a piecewise phase s(t) in {-1, 0, +1}:
+      AM_HOURS_SET  -> +1  (pull to center)
+      MIDDAY_HOURS_SET -> 0  (flat)
+      PM_HOURS_SET  -> -1  (push to periphery)
+      otherwise -> 0  (night: rest)
+    """
     am0, am1 = _hour_bounds_from_set(AM_HOURS_SET)
     md0, md1 = _hour_bounds_from_set(MIDDAY_HOURS_SET)
     pm0, pm1 = _hour_bounds_from_set(PM_HOURS_SET)
 
-    if am0 is None or pm0 is None or md0 is None:
-        minutes = 24*60
-        phase  = (minute_of_day - 8*60 - 30) / minutes
-        return float(math.sin(2*math.pi*phase))
-
     m = minute_of_day
-    am_start = am0*60; am_end = am1*60
-    md_start = md0*60; md_end = md1*60
-    pm_start = pm0*60; pm_end = pm1*60
+    h = m // 60
 
-    if am_start <= m <= am_end:
-        if am_end == am_start:
-            return +1.0
-        frac = (m - am_start) / max(1, (am_end - am_start))
-        return -1.0 + 2.0*frac
-    if md_start <= m <= md_end:
+    if am0 is not None and am0 <= h <= am1:
         return +1.0
-    if pm_start <= m <= pm_end:
-        if pm_end == pm_start:
-            return -1.0
-        frac = (m - pm_start) / max(1, (pm_end - pm_start))
-        return +1.0 - 2.0*frac
-    if m < am_start:
+    if md0 is not None and md0 <= h <= md1:
+        return 0.0
+    if pm0 is not None and pm0 <= h <= pm1:
         return -1.0
-    if m > pm_end:
-        return -1.0
-    if am_end < m < md_start:
-        return +1.0
-    if md_end < m < pm_start:
-        return +1.0
-    return -1.0
+    return 0.0
 
 # =========================
 # Geospatial helpers
@@ -465,38 +518,206 @@ def diagnostic_ring_labels(nodes: List[str], rkm_map: Dict[str,float], n_bins: i
 # =========================
 # Neighbor graph
 # =========================
-def _knn_neighbor_indices(nodes: List[str], K: int) -> Tuple[np.ndarray, np.ndarray]:
+import numpy as np
+from math import sqrt
+
+def _lattice_neighbor_indices(
+    nodes: List[str],
+    K_cap: int,
+    max_rings: int
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    True lattice neighborhood: within ±max_rings grid steps (Chebyshev metric).
+    Returns (nb_idx, nb_dist) with self at rank 0 and neighbors sorted by ring, then Euclidean distance.
+
+    Notes:
+      - Uses local equirectangular projection to get x/y in km for snap-to-grid and for distance calc.
+      - Applies K_cap (truncate if (2*max_rings+1)^2 > K_cap).
+      - Pads rows (edge/border nodes) by repeating self with distance 0 so the output is rectangular.
+    """
     N = len(nodes)
+    if N == 0:
+        return np.empty((0, 0), dtype=int), np.empty((0, 0), dtype=float)
+
+    # Decode all geohashes once (lat, lon)
+    latlon = np.array([geohash_decode(g) for g in nodes], dtype=float)  # [:,0]=lat, [:,1]=lon
+
+    # Local equirectangular projection to km, relative to mean lat/lon (stable numerically)
+    lat_ref = float(latlon[:, 0].mean())
+    lon_ref = float(latlon[:, 1].mean())
+    def _to_xy_km(lat: float, lon: float) -> Tuple[float, float]:
+        # reuse your helper; avoids drift with small areas
+        dx_km, dy_km = _equirect_km_offsets(lat_ref, lon_ref, lat, lon)
+        return dx_km, dy_km
+
+    centers_xy = np.array([_to_xy_km(float(lat), float(lon)) for lat, lon in latlon], dtype=float)  # (N,2)
+
+    # Snap to grid using estimated cell edge
+    e_km = float(CELL_EDGE_KM_EST)
+    gx = np.round(centers_xy[:, 0] / e_km).astype(int)
+    gy = np.round(centers_xy[:, 1] / e_km).astype(int)
+
+    # Build grid -> index map (assumes one node per cell; if collisions exist, first wins)
+    grid = {(int(gx[i]), int(gy[i])): i for i in range(N)}
+
+    # Precompute sorted offsets by ring (Chebyshev radius), then Euclidean
+    offsets: List[Tuple[int,int,int,float]] = []  # (dx, dy, cheb, euclid)
+    for dx in range(-max_rings, max_rings + 1):
+        for dy in range(-max_rings, max_rings + 1):
+            cheb = max(abs(dx), abs(dy))
+            eu   = math.hypot(dx, dy)
+            offsets.append((dx, dy, cheb, eu))
+    # Self should be first (cheb=0, eu=0)
+    offsets.sort(key=lambda t: (t[2], t[3]))  # (chebyshev ring, euclidean within ring)
+
+    # Construct neighbor lists per origin
+    neigh_lists: List[List[int]] = []
+    dist_lists : List[List[float]] = []
+
+    for i in range(N):
+        cx, cy = int(gx[i]), int(gy[i])
+        lst_idx: List[int] = []
+        lst_dst: List[float] = []
+
+        for dx, dy, _, _ in offsets:
+            cell = (cx + dx, cy + dy)
+            j = grid.get(cell)
+            if j is None:
+                continue
+            # append neighbor
+            lst_idx.append(j)
+            # distance in km between centers (use haversine to stay consistent with power/exp kernels)
+            d_km = haversine_km(
+                float(latlon[i, 0]), float(latlon[i, 1]),
+                float(latlon[j, 0]), float(latlon[j, 1])
+            )
+            lst_dst.append(float(d_km))
+
+        # Ensure self is present at rank 0 (it will be, since dx=dy=0 is in offsets, but double-safeguard)
+        if not lst_idx or lst_idx[0] != i:
+            # Put self at front if missing
+            if i in lst_idx:
+                pos = lst_idx.index(i)
+                # move self to front, distance 0
+                lst_idx.pop(pos)
+                lst_dst.pop(pos)
+            lst_idx.insert(0, i)
+            lst_dst.insert(0, 0.0)
+
+        # Apply K cap
+        if K_cap is not None and K_cap > 0:
+            lst_idx = lst_idx[:int(K_cap)]
+            lst_dst = lst_dst[:int(K_cap)]
+
+        neigh_lists.append(lst_idx)
+        dist_lists.append(lst_dst)
+
+    # Make rectangular: pad with self + 0 distance if row shorter than max_len
+    K_eff = max(len(x) for x in neigh_lists)
+    nb_idx  = np.full((N, K_eff), -1, dtype=int)
+    nb_dist = np.zeros((N, K_eff), dtype=float)
+
+    for i in range(N):
+        row_idx = neigh_lists[i]
+        row_dst = dist_lists[i]
+        # pad
+        if len(row_idx) < K_eff:
+            pad_len = K_eff - len(row_idx)
+            row_idx = row_idx + [i] * pad_len
+            row_dst = row_dst + [0.0] * pad_len
+        nb_idx[i, :]  = np.array(row_idx, dtype=int)
+        nb_dist[i, :] = np.array(row_dst, dtype=float)
+
+    return nb_idx, nb_dist
+
+
+def _knn_neighbor_indices(nodes: List[str], K: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    KNN neighbors (including self) for each node.
+
+    Returns:
+        nb_idx  : (N, K_eff) int array of neighbor indices per origin (sorted by distance asc)
+        nb_dist : (N, K_eff) float array of corresponding distances (km)
+    Notes:
+        - K_eff = min(K, N) to avoid argpartition errors when K > N.
+        - Ensures self is present in each neighbor list; if not, it replaces the farthest entry.
+    """
+    N = len(nodes)
+    if N == 0:
+        return np.empty((0, 0), dtype=int), np.empty((0, 0), dtype=float)
+
+    K_eff = max(1, min(int(K), N))  # defensive clamp
+
+    # Decode all geohashes once
     latlons = np.array([geohash_decode(g) for g in nodes], dtype=float)
+
+    # Full symmetric distance matrix (km)
     dmat = np.zeros((N, N), dtype=float)
     for j in range(N):
         latj, lonj = latlons[j]
-        for i in range(j+1, N):
+        for i in range(j + 1, N):
             lati, loni = latlons[i]
             d = haversine_km(latj, lonj, lati, loni)
-            dmat[j,i] = dmat[i,j] = d
-    nb_idx = np.argpartition(dmat, kth=np.minimum(K-1, N-1), axis=0)[:K, :].T  # (N,K)
+            dmat[j, i] = d
+            dmat[i, j] = d
+    # self-distance = 0 by construction
+
+    # Get K_eff nearest (by column), then transpose to (N, K_eff)
+    nb_idx = np.argpartition(dmat, kth=K_eff - 1, axis=0)[:K_eff, :].T
     nb_dist = np.take_along_axis(dmat, nb_idx, axis=1)
+
+    # Ensure self is present; sort by distance
     for j in range(N):
-        row = nb_idx[j]
-        if j not in row:
-            far = np.argmax(nb_dist[j])
-            row[far] = j
-            nb_dist[j, far] = 0.0
-        order = np.argsort(nb_dist[j])
-        nb_idx[j] = row[order]
-        nb_dist[j] = nb_dist[j][order]
+        row_idx = nb_idx[j]
+        row_dist = nb_dist[j]
+
+        # If self not present, replace farthest with self and distance=0
+        if j not in row_idx:
+            far = int(np.argmax(row_dist))
+            row_idx[far] = j
+            row_dist[far] = 0.0
+
+        # Sort this row by distance ascending
+        order = np.argsort(row_dist)
+        nb_idx[j] = row_idx[order]
+        nb_dist[j] = row_dist[order]
+
     return nb_idx.astype(int), nb_dist.astype(float)
 
-def _lattice_neighbor_indices(nodes: List[str], K_cap: int, max_rings: int) -> Tuple[np.ndarray, np.ndarray]:
-    # Approximate lattice by nearest-K; ring semantics used later via ranks
-    return _knn_neighbor_indices(nodes, K_cap)
+
+
 
 def neighbor_indices(nodes: List[str], K: int, scheme: str, max_rings: int) -> Tuple[np.ndarray, np.ndarray]:
-    if scheme == "knn":
-        return _knn_neighbor_indices(nodes, K)
-    else:
-        return _lattice_neighbor_indices(nodes, K, max_rings)
+    scheme = (scheme or "knn").lower()
+    if scheme == "lattice":
+        return _lattice_neighbor_indices(nodes, K_cap=int(K), max_rings=int(max_rings))
+
+    # --- KNN with optional ring-based cutoff ---
+    nb_idx, nb_dist = _knn_neighbor_indices(nodes, int(K))
+
+    # apply cutoff if max_rings is given
+    if max_rings is not None and int(max_rings) > 0:
+        cutoff_km = float(max_rings) * float(CELL_EDGE_KM_EST)
+        N, K_eff = nb_idx.shape
+        for j in range(N):
+            keep = (nb_idx[j] == j) | (nb_dist[j] <= cutoff_km)  # always keep self
+            if np.all(keep):
+                continue
+            # compact row while preserving order
+            row_idx = nb_idx[j][keep]
+            row_dst = nb_dist[j][keep]
+            # pad to K_eff with self
+            pad = K_eff - row_idx.size
+            if pad > 0:
+                row_idx = np.concatenate([row_idx, np.full(pad, j, dtype=int)])
+                row_dst = np.concatenate([row_dst, np.zeros(pad, dtype=float)])
+            nb_idx[j]  = row_idx[:K_eff]
+            nb_dist[j] = row_dst[:K_eff]
+
+    return nb_idx, nb_dist
+
+
+
 
 # =========================
 # Day pattern: apply λ using g(r_km) and s(t)
@@ -519,7 +740,7 @@ def build_P_for_minute(nodes: List[str], rkm_map: Dict[str,float], centers_set: 
                        nb_idx: np.ndarray, nb_dist: np.ndarray) -> np.ndarray:
     N, K = nb_idx.shape
     M_mod = apply_bias_to_masses(nodes, rkm_map, M_base, minute_of_day, LAMBDA_DEST)
-    Mw = np.power(M_mod, ALPHA_MASS)
+    Mw = np.power(M_mod, ALPHA)
 
     h = (minute_of_day // 60) % 24
     P = np.zeros((N, N), dtype=float)
@@ -530,16 +751,19 @@ def build_P_for_minute(nodes: List[str], rkm_map: Dict[str,float], centers_set: 
     periph_set = {g for g in nodes if rkm_map[g] >= R_PERIPH_SAT_KM}
 
     for j in range(N):
-        g_j = gvals[j]
-        pst_mult = float(P_STAY_HOURLY_MULT.get(h, 1.0))
-        node_j = nodes[j]
-        if node_j in centers_set:
-            pst_mult *= float(P_STAY_CENTER_BY_HOUR.get(h, 1.0))
-        if node_j in periph_set:
-            pst_mult *= float(P_STAY_PERIPH_BY_HOUR.get(h, 1.0))
+        g_j = gvals[j]            # g≈1 at center, g≈0 at periphery
+        s = phase_s_of_minute(minute_of_day)
 
-        pst = float(P_STAY_BASE * pst_mult * (1.0 - LAMBDA_STAY * s * g_j))
-        pst = float(np.clip(pst, 0.0, 0.95))
+        # λ-driven stay modulation:
+        #   AM (s=+1):   center ↑stay, periphery ↓stay
+        #   MIDDAY (s=0): neutral
+        #   PM (s=-1):   center ↓stay, periphery ↑stay
+        center_vs_periph = (2.0 * g_j - 1.0)  # +1 center ... -1 periphery
+        pst = P_STAY_BASE * (1.0 + LAMBDA_STAY * s * center_vs_periph)
+
+        # Keep it sane
+        pst = float(np.clip(pst, 0.0, 0.98))
+
 
         neigh = nb_idx[j]
         distk = nb_dist[j]
@@ -553,7 +777,7 @@ def build_P_for_minute(nodes: List[str], rkm_map: Dict[str,float], centers_set: 
         # Gravity weights
         if DIST_DECAY_MODE == "power":
             with np.errstate(divide='ignore'):
-                w = np.power(np.maximum(Mw[neigh], 1e-12), 1.0) / np.power(np.maximum(distk, 1e-6), BETA_DIST)
+                w = np.power(np.maximum(Mw[neigh], 1e-12), 1.0) / np.power(np.maximum(distk, 1e-6), BETA)
         else:
             w = np.power(np.maximum(Mw[neigh], 1e-12), 1.0) * np.exp(-GAMMA_DECAY * distk)
 
@@ -604,6 +828,17 @@ def _truncate_or_resample(x: float, lo: Optional[float], hi: Optional[float], rn
     return x
 
 def sample_hop_distance_km(hop_group: int, rng: np.random.Generator) -> float:
+
+    if ENABLE_UNIFORM_DISTANCE_SAMPLING:
+        # new flag (default False)
+        if hop_group == 0:
+            lo, hi = 0.0, SELF_MAX_PERIM_KM
+        elif hop_group == 1:
+            lo, hi = CELL_EDGE_KM_EST, R1_MAX_KM
+        else:
+            lo, hi = R2_MIN_KM, R2_MAX_KM
+        return float(rng.uniform(lo, hi))
+
     med = LN_MEDIANS.get(int(hop_group), LN_MEDIANS[2]); sig = LN_SIGMA
     if hop_group == 0:
         lo, hi = 0.0, SELF_MAX_PERIM_KM
@@ -613,6 +848,166 @@ def sample_hop_distance_km(hop_group: int, rng: np.random.Generator) -> float:
         lo, hi = R2_MIN_KM, R2_MAX_KM
     sampler = lambda: _sample_lognormal_km(med, sig, rng)
     return _truncate_or_resample(sampler(), lo, hi, rng, sampler)
+
+# --- Helpers for pair-specific envelopes in lattice mode (additive) ---
+
+def _self_max_km_from_mode() -> float:
+    diag = math.sqrt(2.0) * float(CELL_EDGE_KM_EST)
+    return float(2.0 * diag) if SELF_DISTANCE_MODE == "double_diag" else float(diag)
+
+def _equirect_km_offsets(lat0: float, lon0: float, lat1: float, lon1: float) -> Tuple[float, float]:
+    """
+    Local small-area approximation to convert (lat,lon) delta to km in x (east) and y (north).
+    """
+    # mean latitude for scale
+    phi = math.radians((lat0 + lat1) * 0.5)
+    kx = 111.320 * math.cos(phi)   # km per degree lon
+    ky = 110.574                   # km per degree lat
+    dx_km = (lon1 - lon0) * kx
+    dy_km = (lat1 - lat0) * ky
+    return float(dx_km), float(dy_km)
+
+def _abs_round_div(x: float, e: float) -> int:
+    """Round |x|/e to nearest integer."""
+    return int(round(abs(x) / max(e, 1e-9)))
+
+def _ab_from_centers(lat0: float, lon0: float, lat1: float, lon1: float, e_km: float) -> Tuple[int, int]:
+    """
+    Infer lattice offsets (a,b) in units of CELL_EDGE_KM_EST from two tile centers using local km axes.
+    a = horizontal steps (east/west), b = vertical steps (north/south).
+    """
+    dx_km, dy_km = _equirect_km_offsets(lat0, lon0, lat1, lon1)
+    a = _abs_round_div(dx_km, e_km)
+    b = _abs_round_div(dy_km, e_km)
+    return a, b
+
+def _dmin_dmax_for_ab(a: int, b: int, e_km: float, self_max_km: float) -> Tuple[float, float]:
+    """
+    Distance envelope between two axis-aligned squares (edge = e_km) separated by (a,b) steps.
+    Formulas:
+      d_min = e * sqrt(max(a-1,0)^2 + max(b-1,0)^2)
+      d_max = e * sqrt((a+1)^2 + (b+1)^2)
+    Self (a=b=0) uses [0, self_max_km] per SELF_DISTANCE_MODE.
+    """
+    if a == 0 and b == 0:
+        return 0.0, float(self_max_km)
+    am = max(a - 1, 0)
+    bm = max(b - 1, 0)
+    dmin = e_km * math.sqrt(am*am + bm*bm)
+    dmax = e_km * math.sqrt((a + 1)*(a + 1) + (b + 1)*(b + 1))
+    return float(dmin), float(dmax)
+
+
+def precompute_pairwise_envelopes_generic(nodes, nb_idx):
+    N, K = nb_idx.shape
+    latlon = np.array([geohash_decode(g) for g in nodes], dtype=float)
+    # anchor for local km axes
+    lat_ref, lon_ref = float(latlon[:,0].mean()), float(latlon[:,1].mean())
+
+    def to_xy_km(lat, lon):
+        return _equirect_km_offsets(lat_ref, lon_ref, lat, lon)
+
+    xy = np.array([to_xy_km(float(lat), float(lon)) for lat, lon in latlon], dtype=float)
+    e = float(CELL_EDGE_KM_EST)
+    dmin = np.zeros((N, K), dtype=float)
+    dmax = np.zeros((N, K), dtype=float)
+    self_max = _self_max_km_from_mode()
+
+    for j in range(N):
+        xj, yj = xy[j]
+        for r in range(K):
+            i = int(nb_idx[j, r])
+            if i == j:
+                dmin[j, r] = 0.0
+                dmax[j, r] = self_max
+                continue
+            xi, yi = xy[i]
+            dx = abs(xi - xj); dy = abs(yi - yj)
+            # exact box-to-box min, conservative max
+            dmin[j, r] = math.hypot(max(dx - e, 0.0), max(dy - e, 0.0))
+            dmax[j, r] = math.hypot(dx + e, dy + e)
+    return dmin, dmax
+
+def sample_pair_distance_uniform(
+    j: int, i: int, nb_idx_row: np.ndarray,
+    dmin_row: Optional[np.ndarray], dmax_row: Optional[np.ndarray],
+    rng: np.random.Generator
+) -> Optional[float]:
+    """
+    Uniform distance draw using precomputed envelopes aligned with nb_idx.
+    Returns None if envelopes are unavailable for the (j,i) pair.
+    """
+    if dmin_row is None or dmax_row is None:
+        return None
+    # find neighbor rank r where nb_idx[j, r] == i
+    pos = np.where(nb_idx_row == i)[0]
+    if pos.size == 0:
+        return None
+    r = int(pos[0])
+    lo = float(dmin_row[r]); hi = float(dmax_row[r])
+    if not (np.isfinite(lo) and np.isfinite(hi) and hi >= lo):
+        return None
+    if hi == lo:
+        return float(lo)
+    return float(rng.uniform(lo, hi))
+
+def _geom_mean(a: float, b: float) -> float:
+    a = max(a, 1e-9); b = max(b, 1e-9)
+    return float(math.sqrt(a * b))
+
+def _auto_distance_medians_from_bounds() -> Tuple[float, float]:
+    """
+    Compute medians for hop_group 1 and 2 from the configured annuli.
+    Group 1: [CELL_EDGE_KM_EST, R1_MAX_KM]
+    Group 2: [R2_MIN_KM,       R2_MAX_KM]
+    """
+    m1 = _geom_mean(float(CELL_EDGE_KM_EST), float(R1_MAX_KM))
+    m2 = _geom_mean(float(R2_MIN_KM),        float(R2_MAX_KM))
+    return m1, m2
+
+def _auto_distance_medians_from_neighbors(nb_dist: np.ndarray, inner_k: int) -> Tuple[float, float]:
+    """
+    Use neighbor geometry:
+      - Group 1 = ranks 1..inner_k-1 (exclude self rank 0)
+      - Group 2 = ranks >= inner_k
+    We take geometric means of the 20th and 80th percentile radii within each group
+    to avoid extreme tails, then geometric-mean those bounds for the median.
+    """
+    # nb_dist shape: (N, K), column j contains distances to neighbors in ascending order
+    if nb_dist.ndim != 2 or nb_dist.shape[1] < 2:
+        # fallback to bounds if something is off
+        return _auto_distance_medians_from_bounds()
+
+    # For all origins, collect distances by rank group:
+    # rank 0 is self (0 km); inner ranks are 1..inner_k-1
+    K = nb_dist.shape[1]
+    inner_hi = max(1, min(inner_k - 1, K - 1))  # ensure at least rank 1 exists
+    has_inner = inner_hi >= 1
+
+    # Flatten distances across all origins for each group
+    d_inner = nb_dist[:, 1:inner_hi+1].ravel() if has_inner else np.array([])
+    d_outer = nb_dist[:, inner_k: ].ravel()     if inner_k < K else np.array([])
+
+    def robust_geom_median(ds: np.ndarray, fallback: Tuple[float,float]) -> float:
+        if ds.size == 0:
+            return _geom_mean(*fallback)
+        # clip negatives, zeros to tiny positive to keep geom ops valid
+        ds = ds[np.isfinite(ds)]
+        ds = ds[ds > 1e-9]
+        if ds.size == 0:
+            return _geom_mean(*fallback)
+        lo = float(np.quantile(ds, 0.20))
+        hi = float(np.quantile(ds, 0.80))
+        lo = max(lo, 1e-6); hi = max(hi, lo + 1e-6)
+        return _geom_mean(lo, hi)
+
+    # Fallback bounds for robustness
+    b1 = (float(CELL_EDGE_KM_EST), float(R1_MAX_KM))
+    b2 = (float(R2_MIN_KM),        float(R2_MAX_KM))
+
+    m1 = robust_geom_median(d_inner, b1)
+    m2 = robust_geom_median(d_outer, b2)
+    return m1, m2
 
 # =========================
 # Linear algebra
@@ -677,40 +1072,6 @@ def write_transitions(P_daily: List[np.ndarray], nodes: List[str], manifest_path
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
-# =========================
-# Per-bin totals controller (kept for compatibility; not used to subsample)
-# =========================
-def compute_target_total_for_bin(template_df: pd.DataFrame, minute_of_day: int) -> int:
-    if TOTAL_PER_BIN_MODE == "fixed":
-        return int(TOTAL_PER_BIN_FIXED)
-
-    if TOTAL_PER_BIN_MODE == "template_mean":
-        if COUNT_COL in template_df.columns and TIME_COL in template_df.columns:
-            counts = template_df.groupby(TIME_COL)[COUNT_COL].sum()
-            if not counts.empty:
-                return int(round(counts.mean()))
-        return int(TOTAL_PER_BIN_FIXED)
-
-    if TOTAL_PER_BIN_MODE == "series":
-        offset, scale, hours = SERIES_SPEC
-        h = (minute_of_day // 60) % 24
-        if SERIES_HOUR_SET and isinstance(SERIES_HOUR_SET, dict) and h in SERIES_HOUR_SET:
-            base = float(SERIES_HOUR_SET[h])
-        else:
-            if SERIES_SOURCE == "first_day" and COUNT_COL in template_df.columns and TIME_COL in template_df.columns:
-                td0 = pd.to_datetime(template_df[TIME_COL], errors="coerce", utc=False)
-                d0 = td0.dt.floor('D').min()
-                sel = template_df[td0.dt.floor('D') == d0]
-                prof = sel.groupby(td0.dt.hour)[COUNT_COL].sum()
-                base = float(prof.get(h, prof.mean() if not prof.empty else 1.0))
-                if not np.isfinite(base) or base <= 0:
-                    base = 1.0
-                base /= float(prof.mean() if not prof.empty else 1.0)
-            else:
-                base = 1.0
-        return int(max(0, round(offset + scale * base)))
-
-    return int(TOTAL_PER_BIN_FIXED)
 
 # =========================
 # Initial masses & initial state
@@ -732,7 +1093,36 @@ def _template_inflow_vector(dfw: pd.DataFrame, nodes: List[str], mode: str,
     v = np.where(v <= 0, 1.0, v)
     return v
 
-def build_initial_masses(dfw: pd.DataFrame, nodes: List[str]) -> np.ndarray:
+
+def radial_profile_multiplier_vector(
+    nodes: List[str],
+    rkm_map: Dict[str, float],
+    rc_km: float,
+    rp_km: float,
+    center_mult: float,
+    periph_mult: float
+) -> np.ndarray:
+    """
+    Build per-node multipliers: flat=center_mult for r<=rc, flat=periph_mult for r>=rp,
+    linearly interpolated in between.
+    """
+    rc = float(rc_km); rp = float(rp_km)
+    if rp <= rc:  # safety
+        rp = rc + 1e-6
+    m = []
+    for g in nodes:
+        r = float(rkm_map[g])
+        if r <= rc:
+            m.append(center_mult)
+        elif r >= rp:
+            m.append(periph_mult)
+        else:
+            u = (r - rc) / (rp - rc)  # 0..1
+            m.append(center_mult * (1.0 - u) + periph_mult * u)
+    return np.array(m, dtype=float)
+
+
+def build_initial_masses(dfw: pd.DataFrame, nodes: List[str], rkm_map) -> np.ndarray:
     mode = str(MASS_INIT_MODE).lower()
     if mode == "flat":
         M = np.ones(len(nodes), dtype=float)
@@ -742,6 +1132,22 @@ def build_initial_masses(dfw: pd.DataFrame, nodes: List[str]) -> np.ndarray:
         hs = set(MASS_INIT_HOUR_SET) if MASS_INIT_HOUR_SET else None
         M = _template_inflow_vector(dfw, nodes, mode="window", hour_set=hs)
     M = M / (M.mean() + 1e-12)
+
+
+        # Optional: apply radial profile to initial masses (multiplicative), then renormalize mean
+    if RADIAL_INIT_ENABLE_MASS:
+        mult = radial_profile_multiplier_vector(
+            nodes=nodes,
+            rkm_map=rkm_map,  # NOTE: rkm_map must be available (see integration below)
+            rc_km=RADIAL_INIT_INNER_KM,
+            rp_km=RADIAL_INIT_OUTER_KM,
+            center_mult=RADIAL_INIT_CENTER_MULT,
+            periph_mult=RADIAL_INIT_PERIPH_MULT
+        )
+        M = M * np.maximum(mult, 1e-12)
+        if RADIAL_INIT_NORMALIZE == "mean1":
+            M = M / (M.mean() + 1e-12)
+
     M = np.clip(M, 1e-9, None)
     return M
 
@@ -760,7 +1166,7 @@ def periodic_fixed_point(P_daily: List[np.ndarray], tol: float = 1e-12, max_days
             return x
     return x
 
-def compute_initial_state(P_daily: List[np.ndarray], nodes: List[str], dfw: pd.DataFrame) -> np.ndarray:
+def compute_initial_state(P_daily: List[np.ndarray], nodes: List[str], dfw: pd.DataFrame, rkm_map=None) -> np.ndarray:
     mode = str(INIT_X_MODE).lower()
     N = len(nodes)
     if mode == "flat":
@@ -781,6 +1187,28 @@ def compute_initial_state(P_daily: List[np.ndarray], nodes: List[str], dfw: pd.D
         return x0 / (x0.sum() + 1e-12)
     Pm = np.mean(np.stack(P_daily, axis=0), axis=0)
     x0 = power_stationary(Pm)
+
+    # Optional: apply radial profile to initial x (multiplicative) then renormalize sum to 1
+    if RADIAL_INIT_ENABLE_X:
+        # We need rkm_map here; either pass it in or read a cached global.
+        # Using cached global to avoid changing this signature:
+        # try:
+        #     rkm = _RKM_MAP_CACHE  # set in generate()
+        # except NameError:
+        #     rkm = {g: 0.0 for g in nodes}  # fallback: neutral
+        mult = radial_profile_multiplier_vector(
+            nodes=nodes,
+            rkm_map=rkm_map,
+            rc_km=RADIAL_INIT_INNER_KM,
+            rp_km=RADIAL_INIT_OUTER_KM,
+            center_mult=RADIAL_INIT_CENTER_MULT,
+            periph_mult=RADIAL_INIT_PERIPH_MULT
+        )
+        x0 = x0 * np.maximum(mult, 1e-12)
+        s = x0.sum()
+        x0 = x0 / (s + 1e-12)
+
+
     return x0 / (x0.sum() + 1e-12)
 
 # =========================
@@ -1021,21 +1449,43 @@ def validate():
             "total_origins": int(len(nodes)),
         })
 
-    comp_df = pd.DataFrame(comp_rows)
-    comp_path = os.path.join(OUTPUT_DIR, "pep_model_empirical_compare.csv")
-    comp_df.to_csv(comp_path, index=False)
-    info(f"[WRITE] model vs empirical (per-bin, mass-weighted): {comp_path}")
+    # comp_df = pd.DataFrame(comp_rows)
+    # comp_path = os.path.join(OUTPUT_DIR, "pep_model_empirical_compare.csv")
+    # comp_df.to_csv(comp_path, index=False)
+    # info(f"[WRITE] model vs empirical (per-bin, mass-weighted): {comp_path}")
 
     # Diagnostics: temporal/day-bin/daily balances
-    td_path = os.path.join(OUTPUT_DIR, "pep_temporal_diagnostics.csv")
-    mb_path = os.path.join(OUTPUT_DIR, "pep_mean_bin_balance.csv")
-    dl_path = os.path.join(OUTPUT_DIR, "pep_daily_balance.csv")
-    write_pep_temporal_diagnostics(od, centers, td_path)
-    write_pep_mean_bin_balance(od, centers, mb_path)
-    write_pep_daily_balance(od, centers, dl_path)
-    info(f"[WRITE] temporal diagnostics: {td_path}")
-    info(f"[WRITE] mean bin balance: {mb_path}")
-    info(f"[WRITE] daily balance: {dl_path}")
+    # Empirical vs model comparison per exact bin
+    if ENABLE_DIAG_MODEL_EMP_COMPARE:
+        comp_df = pd.DataFrame(comp_rows)
+        comp_path = os.path.join(OUTPUT_DIR, "pep_model_empirical_compare.csv")
+        comp_df.to_csv(comp_path, index=False)
+        info(f"[WRITE] model vs empirical (per-bin, mass-weighted): {comp_path}")
+    else:
+        info("[SKIP] model vs empirical compare (disabled)")
+
+    # Diagnostics: temporal/day-bin/daily balances
+    if ENABLE_DIAG_TEMPORAL:
+        td_path = os.path.join(OUTPUT_DIR, "pep_temporal_diagnostics.csv")
+        write_pep_temporal_diagnostics(od, centers, td_path)
+        info(f"[WRITE] temporal diagnostics: {td_path}")
+    else:
+        info("[SKIP] temporal diagnostics (disabled)")
+
+    if ENABLE_DIAG_MEAN_BIN:
+        mb_path = os.path.join(OUTPUT_DIR, "pep_mean_bin_balance.csv")
+        write_pep_mean_bin_balance(od, centers, mb_path)
+        info(f"[WRITE] mean bin balance: {mb_path}")
+    else:
+        info("[SKIP] mean bin balance (disabled)")
+
+    if ENABLE_DIAG_DAILY:
+        dl_path = os.path.join(OUTPUT_DIR, "pep_daily_balance.csv")
+        write_pep_daily_balance(od, centers, dl_path)
+        info(f"[WRITE] daily balance: {dl_path}")
+    else:
+        info("[SKIP] daily balance (disabled)")
+
 
     # Periodicity (sanity): end-of-day vs start-of-day L1 on destination totals
     od["_day"] = od["_t0"].dt.floor("D")
@@ -1071,6 +1521,8 @@ def generate():
     # Time bins for one day (pattern)
     bins_per_day = int(((WINDOW_END_HH - WINDOW_START_HH) * 60) // TIME_RES_MIN)
     minutes_in_day = [WINDOW_START_HH*60 + b*TIME_RES_MIN for b in range(bins_per_day)]
+    # Diagnostics collector
+    neighbor_diag_rows = []  # (only used if ENABLE_NEIGHBOR_DIAGNOSTICS)
 
     # Template & region filter
     if USE_TEMPLATE and os.path.exists(TEMPLATE_PATH):
@@ -1092,25 +1544,105 @@ def generate():
     rkm_map = radial_km(nodes, center_latlon)
     _ = diagnostic_ring_labels(nodes, rkm_map, DIAGNOSTIC_RING_BINS)
 
-    # Neighbors
+    # --- Auto-tune saturation radii (optional) ---
+    if AUTO_TUNE_SAT_RADII:
+        rvals = np.array([rkm_map[g] for g in nodes], dtype=float)
+        # periphery at percentile
+        rp_auto = np.quantile(rvals, float(AUTO_PERIPH_Q))
+        # center = max(farthest center + pad, small)
+        far_center = max(rkm_map.get(g, 0.0) for g in centers) if centers else 0.0
+        rc_auto = max(float(far_center) + float(AUTO_CENTER_PAD_KM), 0.5 * float(CELL_EDGE_KM_EST))
+
+        # apply mode
+        if AUTO_TUNE_MODE == "replace":
+            new_rc = rc_auto
+            new_rp = rp_auto
+        else:  # "floor": only raise, never shrink
+            new_rc = max(float(R_CENTER_SAT_KM), rc_auto)
+            new_rp = max(float(R_PERIPH_SAT_KM), rp_auto)
+
+        # allow hard overrides
+        if RC_OVERRIDE_KM is not None: new_rc = float(RC_OVERRIDE_KM)
+        if RP_OVERRIDE_KM is not None: new_rp = float(RP_OVERRIDE_KM)
+
+        globals()["R_CENTER_SAT_KM"] = float(new_rc)
+        globals()["R_PERIPH_SAT_KM"] = float(new_rp)
+        info(f"[AUTO-R] R_CENTER_SAT_KM={R_CENTER_SAT_KM:.2f} km, R_PERIPH_SAT_KM={R_PERIPH_SAT_KM:.2f} km")
+
     nb_idx, nb_dist = neighbor_indices(nodes, NEIGHBOR_K, NEIGHBOR_SCHEME, NEIGHBOR_MAX_RINGS)
 
+    # Optional: precompute pairwise envelopes for lattice mode
+    pair_env_dmin = pair_env_dmax = None
+    if ENABLE_PAIRWISE_DISTANCE_ENVELOPES:
+        info("[PAIR-ENV] Precomputing pair-specific distance envelopes (lattice mode).")
+        pair_env_dmin, pair_env_dmax = precompute_pairwise_envelopes_generic(nodes, nb_idx)
+
+        if DUMP_PAIRWISE_ENVELOPES_JSON:
+            # Dump a compact JSON with (origin, neighbor, dmin, dmax)
+            env_dump = []
+            for j in range(len(nodes)):
+                for r in range(nb_idx.shape[1]):
+                    i = int(nb_idx[j, r])
+                    env_dump.append({
+                        "origin": nodes[j],
+                        "dest": nodes[i],
+                        "rank": int(r),
+                        "dmin_m": float(pair_env_dmin[j, r] * 1000.0),
+                        "dmax_m": float(pair_env_dmax[j, r] * 1000.0),
+                    })
+            dump_path = os.path.join(OUTPUT_DIR, "pep_pairwise_envelopes.json")
+            with open(dump_path, "w", encoding="utf-8") as f:
+                json.dump(env_dump, f)
+            info(f"[PAIR-ENV] Wrote envelope dump: {dump_path}")
+
+    # --- Optional: auto-tune hop distance medians (default OFF; purely additive) ---
+    if ENABLE_AUTO_DISTANCE_MEDIANS:
+        if AUTO_DISTANCE_MEDIAN_STRATEGY == "empirical_neighbors":
+            m1, m2 = _auto_distance_medians_from_neighbors(nb_dist, int(NEIGHBOR_INNER_K))
+        else:  # "geom_bounds"
+            m1, m2 = _auto_distance_medians_from_bounds()
+
+        # Update medians for hop groups 1 and 2; keep group 0 unchanged
+        LN_MEDIANS[1] = float(m1)
+        LN_MEDIANS[2] = float(m2)
+
+        if AUTO_LN_SIGMA is not None:
+            globals()["LN_SIGMA"] = float(AUTO_LN_SIGMA)
+
+        info(f"[AUTO-HOPS] LN_MEDIANS[1]={LN_MEDIANS[1]:.3f} km, LN_MEDIANS[2]={LN_MEDIANS[2]:.3f} km; "
+            f"LN_SIGMA={LN_SIGMA:.3f}")
+
     # Base destination masses
-    M_base = build_initial_masses(dfw, nodes)
+    # M_base = build_initial_masses(dfw, nodes)
+    M_base = build_initial_masses(dfw, nodes, rkm_map)
 
     # Build daily pattern once
     P_daily = [build_P_for_minute(nodes, rkm_map, set(centers), mday, M_base, nb_idx, nb_dist)
                for mday in minutes_in_day]
 
     # Initial state x0
-    x0 = compute_initial_state(P_daily, nodes, dfw)
+    x0 = compute_initial_state(P_daily, nodes, dfw,rkm_map=rkm_map)
 
     # Persist transitions pattern
     trans_npy, manifest = transitions_paths()
-    write_transitions(P_daily, nodes, manifest, trans_npy,
-                      extra_meta={"centers": centers, "seed": SEED,
-                                  "mass_init_mode": MASS_INIT_MODE,
-                                  "init_x_mode": INIT_X_MODE})
+    # write_transitions(P_daily, nodes, manifest, trans_npy,
+    #                   extra_meta={"centers": centers, "seed": SEED,
+    #                               "mass_init_mode": MASS_INIT_MODE,
+    #                               "init_x_mode": INIT_X_MODE})
+    write_transitions(
+        P_daily, nodes, manifest, trans_npy,
+        extra_meta={
+            "centers": centers,
+            "seed": SEED,
+            "mass_init_mode": MASS_INIT_MODE,
+            "init_x_mode": INIT_X_MODE,
+            "enable_auto_distance_medians": ENABLE_AUTO_DISTANCE_MEDIANS,
+            "auto_distance_median_strategy": AUTO_DISTANCE_MEDIAN_STRATEGY,
+            "auto_ln_sigma": AUTO_LN_SIGMA,
+            "ln_medians_effective_km": {k: float(v) for k, v in LN_MEDIANS.items()},
+            "ln_sigma_effective": float(LN_SIGMA),
+        },
+    )
 
     # Agent pool (ALL agents)
     N = len(nodes)
@@ -1137,6 +1669,53 @@ def generate():
         for b, mday in enumerate(minutes_in_day):
             tbin = day + pd.Timedelta(minutes=int(mday)) - pd.Timedelta(minutes=WINDOW_START_HH*60)
             P = P_daily[b]
+            # inline progress indicator (updates each simulated day)
+            print(f"\r[DAY] {day.date()} in progress...", end="", flush=True)
+
+            # --- Neighbor diagnostics: count non-zero destinations per origin/column ---
+            if ENABLE_NEIGHBOR_DIAGNOSTICS:
+                # For each origin j: how many destinations i have P[i,j] > 0?
+                # We'll also split out self vs non-self, and compare to K.
+                Ncols = P.shape[1]
+                for j in range(Ncols):
+                    col = P[:, j]
+                    nnz_total = int(np.count_nonzero(col > 0.0))
+                    has_self = bool(col[j] > 0.0)
+                    nnz_nonself = int(nnz_total - (1 if has_self else 0))
+
+                    # How many neighbors were even eligible (excluding self)?
+                    # This uses the neighbor list we constructed; some may be zero after cutoff.
+                    neigh_list = nb_idx[j]
+                    neigh_excl_self = neigh_list[neigh_list != j]
+                    eligible_neighbors = int(neigh_excl_self.size)  # typically K-1
+
+                    # Among eligible neighbors, how many actually got >0 prob?
+                    nnz_among_neighbors = int(np.count_nonzero(col[neigh_excl_self] > 0.0))
+
+                    # Stay prob & spread for context
+                    pst = float(P[j, j])
+                    spread = float(1.0 - pst)
+
+                    # Any entries outside the neighbor set that got prob? (should be 0)
+                    outside = np.setdiff1d(np.where(col > 0.0)[0], neigh_list, assume_unique=False)
+                    nnz_outside_neighbors = int(outside.size)
+
+                    neighbor_diag_rows.append({
+                        "sim_day": int(day.strftime("%Y%m%d")),
+                        "bin_index": int(b),
+                        "minute_of_day": int(mday),
+                        "origin_geohash5": nodes[j],
+                        "pst_self": pst,
+                        "spread_nonself": spread,
+                        "nnz_total": nnz_total,
+                        "nnz_nonself": nnz_nonself,
+                        "eligible_neighbors": eligible_neighbors,
+                        "nnz_among_neighbors": nnz_among_neighbors,
+                        "nnz_outside_neighbors": nnz_outside_neighbors,  # should be 0
+                        "NEIGHBOR_K_config": int(NEIGHBOR_K),
+                        "NEIGHBOR_INNER_K_config": int(NEIGHBOR_INNER_K),
+                    })
+                    # print("HERE")
 
             # === Markov step: EVERY agent transitions once ===
             js_all = agent_state
@@ -1168,7 +1747,24 @@ def generate():
                 else:
                     rnk = rank_maps[j].get(i, NEIGHBOR_K + 1)
                     hop_group = 1 if rnk < NEIGHBOR_INNER_K else 2
-                d_km = sample_hop_distance_km(hop_group, rng)
+                # d_km = sample_hop_distance_km(hop_group, rng)
+
+                # Prefer pair-specific uniform envelope in lattice mode if enabled, else fall back
+                d_km = None
+                if ENABLE_PAIRWISE_DISTANCE_ENVELOPES and NEIGHBOR_SCHEME == "lattice" and pair_env_dmin is not None:
+                    d_km = sample_pair_distance_uniform(
+                        j=j,
+                        i=i,
+                        nb_idx_row=nb_idx[j],
+                        dmin_row=pair_env_dmin[j] if pair_env_dmin is not None else None,
+                        dmax_row=pair_env_dmax[j] if pair_env_dmax is not None else None,
+                        rng=rng
+                    )
+                if d_km is None:
+                    # fallback: original hop-group sampler (lognormal-with-truncation, or whatever you switched on)
+                    d_km = sample_hop_distance_km(hop_group, rng)
+
+
                 out_rows.append((
                     agent_ids[a],                  # PEP_ID
                     nodes[js_all[a]],              # start_geohash5
@@ -1190,21 +1786,35 @@ def generate():
 
     raw_cols = ["PEP_ID", START_COL, END_COL, DATE_COL, TIME_COL, "length_m"]
     pep_df = pd.DataFrame(out_rows, columns=raw_cols)
+    # Stable ordering for raw trip file
+    pep_df.sort_values(
+        by=[DATE_COL, TIME_COL, START_COL, END_COL],
+        inplace=True,
+        ignore_index=True
+    )
 
-    raw_path = os.path.join(OUTPUT_DIR, f"pep_raw_{tag}.csv")
-    if COMPRESS_OUTPUTS:
-        raw_path += ".gz"
-        with gzip.open(raw_path, "wt", encoding="utf-8") as f:
-            pep_df.to_csv(f, index=False)
-    else:
-        pep_df.to_csv(raw_path, index=False)
-    info(f"Wrote raw PEP rows: {raw_path}")
+    if WRITE_RAW:
+        raw_path = os.path.join(OUTPUT_DIR, f"pep_raw_{tag}.csv")
+        if COMPRESS_OUTPUTS:
+            raw_path += ".gz"
+            with gzip.open(raw_path, "wt", encoding="utf-8") as f:
+                pep_df.to_csv(f, index=False)
+        else:
+            pep_df.to_csv(raw_path, index=False)
+        info(f"Wrote raw PEP rows: {raw_path}")
+
+    # Optional: stable ordering for OD aggregates
 
     if WRITE_OD_AGGREGATE:
         g = pep_df.groupby([START_COL, END_COL, DATE_COL, TIME_COL], as_index=False)
         od = g.agg(trip_count=("length_m", "size"),
                    m_length_m=("length_m", "mean"),
                    mdn_length_m=("length_m", "median"))
+        od.sort_values(
+            by=[DATE_COL, TIME_COL, START_COL, END_COL],
+            inplace=True,
+            ignore_index=True
+        )
         od_path = os.path.join(OUTPUT_DIR, f"pep_od_{tag}.csv")
         if COMPRESS_OUTPUTS:
             od_path += ".gz"
@@ -1212,7 +1822,27 @@ def generate():
                 od.to_csv(f, index=False)
         else:
             od.to_csv(od_path, index=False)
+        # od.to_csv(od_path, index=False)
         info(f"Wrote OD aggregate: {od_path}")
+
+    if ENABLE_NEIGHBOR_DIAGNOSTICS and neighbor_diag_rows:
+        diag_df = pd.DataFrame(neighbor_diag_rows)
+        diag_path = os.path.join(OUTPUT_DIR, f"pep_neighbor_diagnostics_{tag}.csv")
+        diag_df.to_csv(diag_path, index=False)
+        info(f"[WRITE] neighbor diagnostics (per-bin, per-origin): {diag_path}")
+
+        # A compact summary per origin (across the whole run)
+        summary = diag_df.groupby("origin_geohash5", as_index=False).agg(
+            bins=("bin_index", "size"),
+            mean_nnz_nonself=("nnz_nonself", "mean"),
+            max_nnz_nonself=("nnz_nonself", "max"),
+            mean_eligible_neighbors=("eligible_neighbors", "mean"),
+            max_eligible_neighbors=("eligible_neighbors", "max"),
+            any_outside_neighbors=("nnz_outside_neighbors", lambda s: int((s > 0).any())),
+        )
+        sum_path = os.path.join(OUTPUT_DIR, f"pep_neighbor_diagnostics_summary_{tag}.csv")
+        summary.to_csv(sum_path, index=False)
+        info(f"[WRITE] neighbor diagnostics summary: {sum_path}")
 
     # --- NEW: write final population vector and aggregates ---
     write_final_population(
@@ -1224,6 +1854,9 @@ def generate():
         tag=tag,
         pool_size=POOL_SIZE,
     )
+
+    # --- Write neighbor diagnostics (if enabled) ---
+
 
     if VALIDATE_ON_GENERATE:
         try:
