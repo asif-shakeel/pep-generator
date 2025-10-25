@@ -123,6 +123,25 @@ NEIGHBOR_MAX_RINGS = 8   # or higher (and maybe NEIGHBOR_K accordingly)
 # NEIGHBOR_K = (2*NEIGHBOR_MAX_RINGS+1)**2  # or just something large like 225–400
 # NEIGHBOR_INNER_K    = NEIGHBOR_K
 ENABLE_NEIGHBOR_DIAGNOSTICS = False
+# =========================
+# Center selection config
+# =========================
+# Which metric defines the "center set"
+#   - "rank_by_radius"  : pick the K tiles with smallest radius (km) from a reference center
+#   - "radius_threshold": pick all tiles with r_km <= CENTER_RADIUS_KM
+#   - "inflow_topk"     : pick the K tiles with largest template inflow (END tile counts)
+CENTER_SELECTION_MODE = "rank_by_radius"   # {"rank_by_radius","radius_threshold","inflow_topk"}
+
+
+# For radius_threshold mode only
+CENTER_RADIUS_KM = 10.0
+
+# Where the geometric radius is measured from (used by rank_by_radius / radius_threshold)
+#   - "inflow_centroid": centroid of inflow Top-K (robust if template exists)
+#   - "all_nodes_centroid": centroid of all tiles (purely geometric)
+#   - "custom": use CENTER_REF_LATLON explicitly
+CENTER_REFERENCE = "all_nodes_centroid"   # {"inflow_centroid","all_nodes_centroid","custom"}
+CENTER_REF_LATLON = (None, None)       # e.g., (19.4326, -99.1332)  # (lat, lon) if CENTER_REFERENCE == "custom"
 
 # =========================
 # Distance sampling
@@ -147,14 +166,16 @@ ENABLE_DIAG_DAILY             = True
 # Initial mass & initial state
 # =========================
 # Destination masses: center-heavy all day; start state slightly periphery-biased.
-MASS_INIT_MODE     = "flat" # "center_periph" 
+MASS_INIT_MODE     = "center_periph"  # "flat" # 
 MASS_INIT_HOUR_SET = None
-INIT_X_MODE        = "flat" # "center_periph" 
+INIT_X_MODE        = "center_periph"  # "flat" # 
 
+
+DETERMINISTIC_INITIAL_ASSIGNMENT = True  # new global toggle
 
 # (center_value, periphery_value)
-MASS_CENTER_PERIPH = (2.0, 0.8)    # center tiles 2× heavier, periphery 0.8×
-X_CENTER_PERIPH    = (0.6, 1.4)    # fewer people start in center, more outside
+MASS_CENTER_PERIPH = (20.0, 1)    # center tiles 2× heavier, periphery 0.8×
+X_CENTER_PERIPH    = (1, 10)    # fewer people start in center, more outside
 
 # Radial reshaping (on for both masses and x)
 RADIAL_INIT_ENABLE_MASS = False
@@ -168,6 +189,8 @@ RADIAL_INIT_OUTER_KM = 50.0
 RADIAL_INIT_CENTER_MULT  = 2.0   # MASS multipliers → center ≈2× attractive
 RADIAL_INIT_PERIPH_MULT  = 0.6
 RADIAL_INIT_NORMALIZE    = "mean1"
+
+
 
 # =========================
 # Per-bin population control
@@ -208,6 +231,14 @@ PHASE_VALUE_ELSE    =  0.0   # night: neutral (combine with high stay below → 
 P_STAY_BASE = 0.8          # ≈2% spread at night (s=0) → near standstill
 P_STAY_MIN  = 0.02            # safety rails
 P_STAY_MAX  = 0.98
+
+
+# =========================
+# Stays (region-specific)
+# =========================
+# Baseline stickiness (center, periphery)
+P_STAY_BASE_MODE = (0.95, 0.05)  # tuple (center, periphery)
+ENABLE_CENTER_PERIPH_STAY = True
 
 # =========================
 # λ modulation (additive mode)
@@ -463,13 +494,20 @@ def g_of_r(r_km: float, r_center_km: float, r_periph_km: float) -> float:
 # ADDITIVE mass modulation (no hard clamp; only non-negativity)
 # =========================
 
-def assign_center_periph_values(radii_km, centers, center_val, periph_val):
-    """Return an array of values based on center/periphery membership."""
-    vals = np.full_like(radii_km, periph_val, dtype=float)
-    # Assign explicit center value
-    for i, tile in enumerate(centers):
-        vals[i] = center_val
+def assign_center_periph_values_for_nodes(nodes: List[str], centers: List[str],
+                                          center_val: float, periph_val: float) -> np.ndarray:
+    """
+    Return a vector aligned to `nodes`, assigning `center_val` to nodes in `centers`
+    and `periph_val` otherwise.
+    """
+    centers_set = set(centers)
+    vals = np.full(len(nodes), float(periph_val), dtype=float)
+    for idx, g in enumerate(nodes):
+        if g in centers_set:
+            vals[idx] = float(center_val)
     return vals
+
+
 
 def apply_mass_modulation(nodes, rkm_map, M_base: np.ndarray, minute_of_day: int) -> np.ndarray:
     """
@@ -503,23 +541,30 @@ def apply_mass_modulation(nodes, rkm_map, M_base: np.ndarray, minute_of_day: int
 # =========================
 def stay_probability_for_origin(g_j: float, minute_of_day: int) -> float:
     """
-    If ENABLE_ADDITIVE_LAMBDA:
-        p_stay = P_STAY_BASE + s(t) * LAMBDA_STAY * (2*g_j - 1)
-    else:
-        p_stay = P_STAY_BASE * (1 + s(t) * LAMBDA_STAY * (2*g_j - 1))
-
-    Hard limits REMOVED: do not use P_STAY_MIN/P_STAY_MAX here.
-    Legality only: clamp to [0, 1].
+    Regionalized version:
+    Each origin's base p_stay is chosen according to its g_j (centralness):
+      - center:   P_STAY_BASE_MODE[0]
+      - periphery: P_STAY_BASE_MODE[1]
+    Then modulated by s(t) * λ_stay * (2g-1) in either additive or multiplicative mode.
     """
+
     s = phase_s_of_minute(minute_of_day)
-    center_vs_periph = (2.0 * g_j - 1.0)  # +1 center … -1 periphery
+    center_vs_periph = (2.0 * g_j - 1.0)
 
-    if ENABLE_ADDITIVE_LAMBDA:
-        pst = P_STAY_BASE + (LAMBDA_STAY * s) * center_vs_periph
+    # --- region-specific base ---
+    if ENABLE_CENTER_PERIPH_STAY:
+        base_center, base_periph = P_STAY_BASE_MODE
+        # g_j ∈ [0, 1] so we interpolate smoothly between periphery and center
+        base_pst = base_periph + g_j * (base_center - base_periph)
     else:
-        pst = P_STAY_BASE * (1.0 + (LAMBDA_STAY * s) * center_vs_periph)
+        base_pst = P_STAY_BASE
 
-    # Legality only
+    # --- modulation ---
+    if ENABLE_ADDITIVE_LAMBDA:
+        pst = base_pst + (LAMBDA_STAY * s) * center_vs_periph
+    else:
+        pst = base_pst * (1.0 + (LAMBDA_STAY * s) * center_vs_periph)
+
     return float(min(1.0, max(0.0, pst)))
 
 
@@ -732,7 +777,73 @@ def neighbor_indices(nodes: List[str], K: int, scheme: str, max_rings: int) -> T
 
     return nb_idx, nb_dist
 
+def _reference_center_latlon(
+    dfw: pd.DataFrame,
+    nodes: List[str],
+    k_for_seed: int = 25,
+) -> Tuple[float, float]:
+    """
+    Returns (lat, lon) for the reference center used to compute r_km.
+    Obeys CENTER_REFERENCE.
+    """
+    mode = str(CENTER_REFERENCE).lower()
+    if mode == "custom" and CENTER_REF_LATLON and all(v is not None for v in CENTER_REF_LATLON):
+        lat, lon = CENTER_REF_LATLON
+        return float(lat), float(lon)
 
+    if mode == "all_nodes_centroid":
+        return centroid_of_tiles(nodes)
+
+    # default: inflow centroid (if template exists) — robust anchor in practice
+    try:
+        seed = infer_centers_by_inflow(dfw, max(1, int(k_for_seed)))
+        if seed:
+            return centroid_of_tiles(seed)
+    except Exception:
+        pass
+    # fallback: centroid of all nodes
+    return centroid_of_tiles(nodes)
+
+def select_centers(
+    nodes: List[str],
+    rkm_map: Dict[str, float],
+    dfw: pd.DataFrame,
+    mode: str,
+    k: int,
+    radius_km: float
+) -> Tuple[List[str], Dict[str, float], dict]:
+    """
+    Returns:
+      centers: List[str]      → chosen center tiles
+      metric:  Dict[str,float]→ metric value per tile used to rank/select
+      meta:    dict           → description of how selection was made (for manifest/logs)
+    """
+    mode = str(mode).lower()
+
+    if mode == "rank_by_radius":
+        metric = {g: float(rkm_map[g]) for g in nodes}
+        centers = sorted(nodes, key=lambda g: metric[g])[:max(1, int(k))]
+        return centers, metric, {"mode": mode, "metric": "radius_km", "k": int(k)}
+
+    if mode == "radius_threshold":
+        metric = {g: float(rkm_map[g]) for g in nodes}
+        centers = [g for g in nodes if metric[g] <= float(radius_km)]
+        if not centers:
+            # guardrail: keep at least the closest tile if threshold too tight
+            closest = min(nodes, key=lambda g: metric[g])
+            centers = [closest]
+        return centers, metric, {"mode": mode, "metric": "radius_km", "radius_km": float(radius_km)}
+
+    if mode == "inflow_topk":
+        if COUNT_COL in dfw.columns:
+            s = dfw.groupby(END_COL)[COUNT_COL].sum()
+        else:
+            s = dfw[END_COL].value_counts()
+        metric = {g: float(s.get(g, 0.0)) for g in nodes}
+        centers = sorted(nodes, key=lambda g: metric[g], reverse=True)[:max(1, int(k))]
+        return centers, metric, {"mode": mode, "metric": "template_inflow", "k": int(k)}
+
+    raise ValueError(f"Unknown CENTER_SELECTION_MODE={mode}")
 
 
 # =========================
@@ -1032,6 +1143,7 @@ def _auto_distance_medians_from_neighbors(nb_dist: np.ndarray, inner_k: int) -> 
     return m1, m2
 
 
+
 # =========================
 # Linear algebra
 # =========================
@@ -1046,6 +1158,7 @@ def power_stationary(P: np.ndarray, tol=1e-12, maxit=10000) -> np.ndarray:
             return x_new
         x = x_new
     return x
+
 
 # =========================
 # Transitions persistence (pattern + manifest)
@@ -1163,10 +1276,14 @@ def build_initial_masses(dfw: pd.DataFrame, nodes: List[str], rkm_map,node_radii
 
     # Optional radial reshaping (multiplicative), then renormalize mean if requested
     if MASS_INIT_MODE == "center_periph":
-        masses = assign_center_periph_values(node_radii_km, centers,
-                                            MASS_CENTER_PERIPH[0],
-                                            MASS_CENTER_PERIPH[1])
-        masses /= masses.mean()   # optional normalization
+        M = assign_center_periph_values_for_nodes(
+            nodes,
+            centers,
+            MASS_CENTER_PERIPH[0],
+            MASS_CENTER_PERIPH[1],
+        )
+        # optional normalization to keep overall mass scale comparable
+        M = M / (M.mean() + 1e-12)
     elif RADIAL_INIT_ENABLE_MASS:
         mult = radial_profile_multiplier_vector(
             nodes=nodes,
@@ -1218,16 +1335,22 @@ def compute_initial_state(P_daily: List[np.ndarray], nodes: List[str], dfw: pd.D
     if mode == "periodic_fixed_point":
         x0 = periodic_fixed_point(P_daily)
         return x0 / (x0.sum() + 1e-12)
+    
+    if mode == "center_periph":
+        x0 = assign_center_periph_values_for_nodes(
+            nodes,
+            centers,
+            X_CENTER_PERIPH[0],
+            X_CENTER_PERIPH[1],
+        )
+        x0 = x0 / (x0.sum() + 1e-12)
+        return x0
+
+
     Pm = np.mean(np.stack(P_daily, axis=0), axis=0)
     x0 = power_stationary(Pm)
 
-    # Optional: apply radial profile to initial x (multiplicative) then renormalize sum to 1
-    if INIT_X_MODE == "center_periph":
-        x0 = assign_center_periph_values(node_radii_km, centers,
-                                        X_CENTER_PERIPH[0],
-                                        X_CENTER_PERIPH[1])
-        x0 /= x0.sum()            # ensure population normalization
-    elif RADIAL_INIT_ENABLE_X:
+    if RADIAL_INIT_ENABLE_X:
         # We need rkm_map here; either pass it in or read a cached global.
         # Using cached global to avoid changing this signature:
         # try:
@@ -1566,6 +1689,13 @@ def write_final_population(
     info(f"[WRITE] final population by tile: {path_tiles}")
     info(f"[WRITE] final population aggregates: {path_agg}")
 
+def _counts_from_state(agent_state: np.ndarray, N: int) -> np.ndarray:
+    return np.bincount(agent_state, minlength=N).astype(int)
+
+def _safe_share(counts_or_sum: np.ndarray | float, total: int) -> np.ndarray | float:
+    denom = float(max(1, total))
+    return counts_or_sum / denom
+
 # =========================
 # validate()
 # =========================
@@ -1584,16 +1714,31 @@ def validate():
     bins_per_day = int(meta.get("bins_per_day", max(1, int(((WINDOW_END_HH-WINDOW_START_HH)*60)//TIME_RES_MIN))))
 
 
-    # --- (new) rebuild radial map and periphery set for diagnostics ---
-    # prefer radii from manifest if present; otherwise fall back to current globals
+
+    # if manifest didn't store centers or it's empty, fall back to centroid of all nodes
+    # center_latlon = centroid_of_tiles(list(centers) if centers else list(nodes)[:CENTER_K])
+    # rkm_map = radial_km(nodes, center_latlon)
+
+    # --- Rebuild or reuse radial distances consistent with generation ---
+    # --- Rebuild or reuse radial distances consistent with generation ---
     rp_eff = float(meta.get("r_periph_sat_km", R_PERIPH_SAT_KM))
     rc_eff = float(meta.get("r_center_sat_km", R_CENTER_SAT_KM))
 
-    # if manifest didn't store centers or it's empty, fall back to centroid of all nodes
-    center_latlon = centroid_of_tiles(list(centers) if centers else list(nodes)[:CENTER_K])
-    rkm_map = radial_km(nodes, center_latlon)
+    # Use the actual stored centers if present; else fall back to the same logic used at generation time.
+    if centers:
+        center_latlon = centroid_of_tiles(list(centers))
+    else:
+        center_meta = meta.get("center_selection_meta", {}) or {}
+        ref_latlon = meta.get("center_ref_latlon")
+        mode_used = str(center_meta.get("mode", CENTER_SELECTION_MODE)).lower()
+        if mode_used in ("rank_by_radius", "radius_threshold") and ref_latlon and all(isinstance(v, (int, float)) for v in ref_latlon):
+            center_latlon = tuple(ref_latlon)
+        else:
+            center_latlon = centroid_of_tiles(list(nodes))
 
+    rkm_map = radial_km(nodes, center_latlon)
     periphery_set = {g for g, r in rkm_map.items() if r >= rp_eff}
+
 
     # Empirical vs model comparison per exact bin
     comp_rows = []
@@ -1715,15 +1860,38 @@ def generate():
             raise ValueError("No nodes discovered from template after region filter.")
         info(f"NODES (unique geohash{GEOHASH_PRECISION}): {len(nodes)}")
 
-        centers = infer_centers_by_inflow(dfw, CENTER_K)
+        ref_latlon = _reference_center_latlon(dfw, nodes, k_for_seed=max(1, int(CENTER_K)))
+        rkm_map = radial_km(nodes, ref_latlon)
+        # centers = infer_centers_by_inflow(dfw, CENTER_K)
+        # --- Choose the "center set" per the configured metric ---
+        centers, center_metric, center_meta = select_centers(
+            nodes=nodes,
+            rkm_map=rkm_map,
+            dfw=dfw,
+            mode=CENTER_SELECTION_MODE,
+            k=int(CENTER_K),
+            radius_km=float(CENTER_RADIUS_KM),
+        )
+
+        info(f"Center selection: mode={CENTER_SELECTION_MODE} meta={center_meta}")
+        info(f"Center tiles (n={len(centers)}): {centers[:min(10, len(centers))]}{'...' if len(centers)>10 else ''}")
+
+        # Optional: diagnostics of spread of chosen centers
+        if centers:
+            rvals = np.array([rkm_map[g] for g in centers], dtype=float)
+            info(f"[CENTER] r_km: min={rvals.min():.2f}  median={np.median(rvals):.2f}  max={rvals.max():.2f}")
+
         info(f"Center tiles (K={CENTER_K}): {centers}")
     else:
         raise FileNotFoundError("Template required (USE_TEMPLATE=True).")
 
     # Radial distances (km) and optional diagnostic rings
-    center_latlon = centroid_of_tiles(centers)
-    rkm_map = radial_km(nodes, center_latlon)
+    # center_latlon = centroid_of_tiles(centers)
+    # rkm_map = radial_km(nodes, center_latlon)
+    # _ = diagnostic_ring_labels(nodes, rkm_map, DIAGNOSTIC_RING_BINS)
+
     _ = diagnostic_ring_labels(nodes, rkm_map, DIAGNOSTIC_RING_BINS)
+
     node_radii_km = np.array([rkm_map[n] for n in nodes])
 
     # --- Auto-tune saturation radii (optional) ---
@@ -1822,6 +1990,9 @@ def generate():
 
     # Initial state x0
     x0 = compute_initial_state(P_daily, nodes, dfw,node_radii_km, centers,rkm_map=rkm_map)
+ 
+    is_center_mask = np.array([g in set(centers) for g in nodes], dtype=bool)
+    print("[x0] sum_center:", x0[is_center_mask].sum(), "sum_noncenter:", x0[~is_center_mask].sum())
 
     # Persist transitions pattern
     trans_npy, manifest = transitions_paths()
@@ -1841,6 +2012,10 @@ def generate():
             "auto_ln_sigma": AUTO_LN_SIGMA,
             "ln_medians_effective_km": {k: float(v) for k, v in LN_MEDIANS.items()},
             "ln_sigma_effective": float(LN_SIGMA),
+            "center_selection_mode": CENTER_SELECTION_MODE,
+            "center_selection_meta": center_meta,
+            "center_ref_latlon": ref_latlon,
+
         },
     )
 
@@ -1911,8 +2086,35 @@ def generate():
     agent_ids = np.array([f"P{(k+1):06d}" for k in range(POOL_SIZE)], dtype=object)
 
 
+    if DETERMINISTIC_INITIAL_ASSIGNMENT:
+        # Compute expected counts
+        expected = x0 * POOL_SIZE
+
+        # Floor to integers
+        counts = np.floor(expected).astype(int)
+        remainder = POOL_SIZE - counts.sum()
+
+        # Distribute leftover agents to tiles with largest fractional parts
+        if remainder > 0:
+            fractional = expected - counts
+            top_idx = np.argsort(-fractional)[:remainder]
+            counts[top_idx] += 1
+
+        # Build the agent_state deterministically
+        agent_state = np.repeat(np.arange(N), counts)
+        # Optional: shuffle for randomness of order, not counts
+        rng.shuffle(agent_state)
+
+        # Also store the initial per-tile population
+        initial_counts = counts
+    else:
+        agent_state = rng.choice(N, size=POOL_SIZE, p=x0, replace=True)
+        initial_counts = np.bincount(agent_state, minlength=N)
+
+
     # initial positions from x0
-    agent_state = rng.choice(N, size=POOL_SIZE, p=x0, replace=True)
+    # agent_state = rng.choice(N, size=POOL_SIZE, p=x0, replace=True)
+    initial_agent_state = agent_state.copy()  # <-- capture initial
 
     # rank maps for hop group classification (distance sampling)
     rank_maps = []
@@ -2106,17 +2308,131 @@ def generate():
         info(f"[WRITE] neighbor diagnostics summary: {sum_path}")
 
     # --- NEW: write final population vector and aggregates ---
-    write_final_population(
-        agent_state=agent_state,
+    def write_population_reports(
+        nodes: List[str],
+        centers: List[str],
+        rkm_map: Dict[str, float],
+        initial_counts: np.ndarray,
+        final_counts: np.ndarray,
+        pool_size: int,
+        out_dir: str,
+        tag: str,
+    ) -> None:
+        """
+        Writes:
+        A) pep_population_by_tile_{tag}.csv
+            geohash5, initial_count/share, final_count/share, delta_share,
+            r_km, is_center, is_periphery_r_ge_rp, is_inner_r_lt_rc
+
+        B) pep_population_aggregates_{tag}.csv
+            groups: center_set, non_center,
+                    inner_r<rc, mid_rc<=r<rp, periphery_r>=rp, TOTAL
+            For each group: initial_count_total, final_count_total,
+                            initial_total_share, final_total_share, delta_total_share,
+                            initial_mean_count_per_tile, final_mean_count_per_tile
+        """
+        N = len(nodes)
+        if initial_counts.shape[0] != N or final_counts.shape[0] != N:
+            raise ValueError("initial_counts/final_counts have wrong length")
+
+        # Per-tile shares and deltas
+        init_share = _safe_share(initial_counts, pool_size) * 100.0
+        final_share = _safe_share(final_counts, pool_size) * 100.0
+        delta_share = final_share - init_share
+
+
+        centers_set = set(centers)
+        is_center = np.array([g in centers_set for g in nodes], dtype=bool)
+        r_km = np.array([float(rkm_map[g]) for g in nodes], dtype=float)
+        is_inner = r_km < float(R_CENTER_SAT_KM)
+        is_periph = r_km >= float(R_PERIPH_SAT_KM)
+
+        # -------- A) Per-tile table
+        df_tiles = pd.DataFrame({
+            "geohash5": nodes,
+            "initial_count": initial_counts,
+            "initial_share": init_share,
+            "final_count": final_counts,
+            "final_share": final_share,
+            "delta_share": delta_share,
+            "r_km": r_km,
+            "is_center": is_center,
+            "is_periphery_r_ge_rp": is_periph,
+            "is_inner_r_lt_rc": is_inner,
+        }).sort_values(["is_center", "final_count"], ascending=[False, False], ignore_index=True)
+
+        path_tiles = os.path.join(out_dir, f"pep_population_by_tile_{tag}.csv")
+        df_tiles.to_csv(path_tiles, index=False)
+        info(f"[WRITE] per-tile initial/final population: {path_tiles}")
+
+        # -------- B) Aggregates
+        # convenience
+        def group_mask(name: str) -> np.ndarray:
+            if name == "center_set":       return is_center
+            if name == "non_center":       return ~is_center
+            if name.startswith("inner_"):  return is_inner
+            if name.startswith("mid_"):    return (~is_inner) & (~is_periph)
+            if name.startswith("periphery"):return is_periph
+            if name == "TOTAL":            return np.ones(N, dtype=bool)
+            raise ValueError(name)
+
+        groups = [
+            "center_set",
+            "non_center",
+            f"inner_r<rc (rc={R_CENTER_SAT_KM}km)",
+            f"mid_rc<=r<rp (rp={R_PERIPH_SAT_KM}km)",
+            "periphery_r>=rp",
+            "TOTAL",
+        ]
+
+        rows = []
+        for gname in groups:
+            m = group_mask(gname)
+            # totals
+            init_tot = int(initial_counts[m].sum())
+            final_tot = int(final_counts[m].sum())
+            init_share_tot = _safe_share(init_tot, pool_size) * 100.0
+            final_share_tot = _safe_share(final_tot, pool_size) * 100.0
+
+
+            # means per tile within the group
+            tiles_in_g = int(m.sum())
+            init_mean = float(initial_counts[m].mean()) if tiles_in_g > 0 else 0.0
+            final_mean = float(final_counts[m].mean()) if tiles_in_g > 0 else 0.0
+
+            rows.append({
+                "group": gname,
+                "tiles_in_group": tiles_in_g,
+                "initial_count_total": init_tot,
+                "final_count_total": final_tot,
+                "initial_total_share": init_share_tot,
+                "final_total_share": final_share_tot,
+                "delta_total_share": final_share_tot - init_share_tot,
+                "initial_mean_count_per_tile": init_mean,
+                "final_mean_count_per_tile": final_mean,
+            })
+
+        df_agg = pd.DataFrame(rows)
+        path_agg = os.path.join(out_dir, f"pep_population_aggregates_{tag}.csv")
+        df_agg.to_csv(path_agg, index=False)
+        info(f"[WRITE] aggregates (initial vs final): {path_agg}")
+
+    # --- Write neighbor diagnostics (if enabled) ---
+    # --- NEW: initial vs final per-tile counts + aggregates ---
+
+    initial_counts = _counts_from_state(initial_agent_state, N)
+    final_counts   = _counts_from_state(agent_state, N)
+
+    write_population_reports(
         nodes=nodes,
         centers=centers,
         rkm_map=rkm_map,
+        initial_counts=initial_counts,
+        final_counts=final_counts,
+        pool_size=POOL_SIZE,
         out_dir=OUTPUT_DIR,
         tag=tag,
-        pool_size=POOL_SIZE,
     )
-
-    # --- Write neighbor diagnostics (if enabled) ---
 
 
     if VALIDATE_ON_GENERATE:
