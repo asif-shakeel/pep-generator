@@ -260,6 +260,20 @@ PERIPH_STAY_SCHEDULE = [
     ("20:00", "22:30", 0.95),  # 0.40 -> 0.10 evening tighten
 ]
 
+
+ENABLE_MASS_BASE_SCHEDULE = True
+MASS_SCHEDULE_MODE = "multiplier"   # or "absolute"
+MASS_BASELINE_NORMALIZE = None      # or "mean1"
+
+CENTER_MASS_SCHEDULE = [
+    ("06:00","09:00", 1.25),
+    ("15:00","20:00", 0.80),
+]
+PERIPH_MASS_SCHEDULE = [
+    ("06:00","09:00", 0.90),
+    ("15:00","20:00", 1.20),
+]
+
 # =========================
 # λ modulation (additive mode)
 # =========================
@@ -1973,6 +1987,27 @@ def generate():
         _CENTER_BASELINE_BY_BIN = np.full(bins_per_day, float(c0), dtype=float)
         _PERIPH_BASELINE_BY_BIN = np.full(bins_per_day, float(p0), dtype=float)
 
+
+    # --- NEW: precompute time-varying MASS baselines per bin (center/periphery) ---
+    global _CENTER_MASS_BASELINE_BY_BIN, _PERIPH_MASS_BASELINE_BY_BIN
+
+    if ENABLE_MASS_BASE_SCHEDULE:
+        if MASS_SCHEDULE_MODE == "multiplier":
+            _CENTER_MASS_BASELINE_BY_BIN = _build_baseline_array_for_class(1.0, CENTER_MASS_SCHEDULE, bins_per_day)
+            _PERIPH_MASS_BASELINE_BY_BIN = _build_baseline_array_for_class(1.0, PERIPH_MASS_SCHEDULE, bins_per_day)
+        else:  # "absolute"
+            c0_abs, p0_abs = MASS_CENTER_PERIPH
+            _CENTER_MASS_BASELINE_BY_BIN = _build_baseline_array_for_class(c0_abs, CENTER_MASS_SCHEDULE, bins_per_day)
+            _PERIPH_MASS_BASELINE_BY_BIN = _build_baseline_array_for_class(p0_abs, PERIPH_MASS_SCHEDULE, bins_per_day)
+    else:
+        if MASS_SCHEDULE_MODE == "multiplier":
+            _CENTER_MASS_BASELINE_BY_BIN = np.ones(bins_per_day, dtype=float)
+            _PERIPH_MASS_BASELINE_BY_BIN = np.ones(bins_per_day, dtype=float)
+        else:  # "absolute"
+            c0_abs, p0_abs = MASS_CENTER_PERIPH
+            _CENTER_MASS_BASELINE_BY_BIN = np.full(bins_per_day, float(c0_abs), dtype=float)
+            _PERIPH_MASS_BASELINE_BY_BIN = np.full(bins_per_day, float(p0_abs), dtype=float)
+
     # Diagnostics collector
     neighbor_diag_rows = []  # (only used if ENABLE_NEIGHBOR_DIAGNOSTICS)
 
@@ -2108,11 +2143,46 @@ def generate():
 
     # Base destination masses
     # M_base = build_initial_masses(dfw, nodes)
-    M_base = build_initial_masses(dfw, nodes, rkm_map,node_radii_km, centers)
+    # Base destination masses (static pattern)
+    M_base0 = build_initial_masses(dfw, nodes, rkm_map, node_radii_km, centers)
+    centers_set = set(centers)
+    is_center_vec = np.array([g in centers_set for g in nodes], dtype=bool)
+
+    # Time-only mass baselines per bin (binary: center vs non-center)
+    M_base_by_bin: List[np.ndarray] = []
+    for b in range(bins_per_day):
+        c_b = float(_CENTER_MASS_BASELINE_BY_BIN[b])
+        p_b = float(_PERIPH_MASS_BASELINE_BY_BIN[b])
+
+        if MASS_SCHEDULE_MODE == "multiplier":
+            # scale the static pattern per class
+            factors = np.where(is_center_vec, c_b, p_b)
+            M_b = np.maximum(M_base0 * factors, 0.0)
+        else:  # "absolute"
+            # replace by absolute class levels
+            M_b = np.where(is_center_vec, c_b, p_b).astype(float)
+            M_b = np.maximum(M_b, 0.0)
+
+        if MASS_BASELINE_NORMALIZE == "mean1":
+            M_b = M_b / (M_b.mean() + 1e-12)
+
+        M_base_by_bin.append(M_b)
 
     # Build daily pattern once
-    P_daily = [build_P_for_minute(nodes, rkm_map, set(centers), mday, M_base, nb_idx, nb_dist)
-               for mday in minutes_in_day]
+    # Build daily pattern once (mass varies by bin, no radial blending)
+    P_daily = [
+        build_P_for_minute(
+            nodes=nodes,
+            rkm_map=rkm_map,
+            centers_set=centers_set,
+            minute_of_day=mday,
+            M_base=M_base_by_bin[b],
+            nb_idx=nb_idx,
+            nb_dist=nb_dist,
+        )
+        for b, mday in enumerate(minutes_in_day)
+]
+
 
     # Initial state x0
     x0 = compute_initial_state(P_daily, nodes, dfw,node_radii_km, centers,rkm_map=rkm_map)
@@ -2146,6 +2216,12 @@ def generate():
             "stay_center_segments": CENTER_STAY_SCHEDULE,
             "stay_periphery_segments": PERIPH_STAY_SCHEDULE,
             "time_res_min": int(TIME_RES_MIN),  # already there, but make sure it is
+            "mass_schedule_enabled": bool(ENABLE_MASS_BASE_SCHEDULE),
+            "mass_schedule_mode": MASS_SCHEDULE_MODE,
+            "mass_baseline_normalize": MASS_BASELINE_NORMALIZE,
+            "center_mass_segments": CENTER_MASS_SCHEDULE,
+            "periphery_mass_segments": PERIPH_MASS_SCHEDULE,
+
         },
     )
 
