@@ -260,19 +260,32 @@ PERIPH_STAY_SCHEDULE = [
     ("20:00", "22:30", 0.95),  # 0.40 -> 0.10 evening tighten
 ]
 
+# =========================
+# Mass (region-specific, time-varying absolute baselines)
+# =========================
+ENABLE_MASS_BASE_SCHEDULE = True     # master toggle for time-varying masses
+MASS_TIME_MODE = "absolute"          # {"absolute","off"}  ("absolute" = piecewise-linear absolute values)
 
-ENABLE_MASS_BASE_SCHEDULE = True
-MASS_SCHEDULE_MODE = "multiplier"   # or "absolute"
-MASS_BASELINE_NORMALIZE = None      # or "mean1"
+# Starting absolute levels for center/periphery (per bin) before any segments apply
+# Keep these neutral (1.0, 1.0) unless you want constant bias before first segment starts.
+MASS_BASE_MODE = (1.0, 20.0)          # tuple (center_start, periphery_start)
 
-CENTER_MASS_SCHEDULE = [
-    ("06:00","09:00", 1.25),
-    ("15:00","20:00", 0.80),
+# --- Time schedules (same format as stays): list of (start_HH:MM, end_HH:MM, target_value) ---
+CENTER_MASS_SCHEDULE =  [
+    ("06:00", "08:00", 20),  # 0.95 -> 0.80 during AM
+    ("15:00", "20:00", 10),  # 0.80 -> 0.60 during PM
+    ("20:00", "22:30", 1),  # 0.60 -> 0.90 evening rebound
 ]
 PERIPH_MASS_SCHEDULE = [
-    ("06:00","09:00", 0.90),
-    ("15:00","20:00", 1.20),
+    ("06:00", "10:00", 5),  # 0.05 -> 0.20 during AM
+    ("15:00", "20:00", 10),  # 0.20 -> 0.40 during PM
+    ("20:00", "22:30", 20),  # 0.40 -> 0.10 evening tighten
 ]
+
+# Runtime arrays (filled in generate())
+_CENTER_MASS_BASELINE_BY_BIN: np.ndarray | None = None
+_PERIPH_MASS_BASELINE_BY_BIN: np.ndarray | None = None
+
 
 # =========================
 # λ modulation (additive mode)
@@ -1990,23 +2003,14 @@ def generate():
 
     # --- NEW: precompute time-varying MASS baselines per bin (center/periphery) ---
     global _CENTER_MASS_BASELINE_BY_BIN, _PERIPH_MASS_BASELINE_BY_BIN
-
-    if ENABLE_MASS_BASE_SCHEDULE:
-        if MASS_SCHEDULE_MODE == "multiplier":
-            _CENTER_MASS_BASELINE_BY_BIN = _build_baseline_array_for_class(1.0, CENTER_MASS_SCHEDULE, bins_per_day)
-            _PERIPH_MASS_BASELINE_BY_BIN = _build_baseline_array_for_class(1.0, PERIPH_MASS_SCHEDULE, bins_per_day)
-        else:  # "absolute"
-            c0_abs, p0_abs = MASS_CENTER_PERIPH
-            _CENTER_MASS_BASELINE_BY_BIN = _build_baseline_array_for_class(c0_abs, CENTER_MASS_SCHEDULE, bins_per_day)
-            _PERIPH_MASS_BASELINE_BY_BIN = _build_baseline_array_for_class(p0_abs, PERIPH_MASS_SCHEDULE, bins_per_day)
+    if ENABLE_MASS_BASE_SCHEDULE and MASS_TIME_MODE == "absolute":
+        m_c0, m_p0 = MASS_BASE_MODE
+        _CENTER_MASS_BASELINE_BY_BIN = _build_baseline_array_for_class(m_c0, CENTER_MASS_SCHEDULE, bins_per_day)
+        _PERIPH_MASS_BASELINE_BY_BIN = _build_baseline_array_for_class(m_p0, PERIPH_MASS_SCHEDULE, bins_per_day)
     else:
-        if MASS_SCHEDULE_MODE == "multiplier":
-            _CENTER_MASS_BASELINE_BY_BIN = np.ones(bins_per_day, dtype=float)
-            _PERIPH_MASS_BASELINE_BY_BIN = np.ones(bins_per_day, dtype=float)
-        else:  # "absolute"
-            c0_abs, p0_abs = MASS_CENTER_PERIPH
-            _CENTER_MASS_BASELINE_BY_BIN = np.full(bins_per_day, float(c0_abs), dtype=float)
-            _PERIPH_MASS_BASELINE_BY_BIN = np.full(bins_per_day, float(p0_abs), dtype=float)
+        m_c0, m_p0 = MASS_BASE_MODE
+        _CENTER_MASS_BASELINE_BY_BIN = np.full(bins_per_day, float(m_c0), dtype=float)
+        _PERIPH_MASS_BASELINE_BY_BIN = np.full(bins_per_day, float(m_p0), dtype=float)
 
     # Diagnostics collector
     neighbor_diag_rows = []  # (only used if ENABLE_NEIGHBOR_DIAGNOSTICS)
@@ -2143,45 +2147,33 @@ def generate():
 
     # Base destination masses
     # M_base = build_initial_masses(dfw, nodes)
-    # Base destination masses (static pattern)
-    M_base0 = build_initial_masses(dfw, nodes, rkm_map, node_radii_km, centers)
-    centers_set = set(centers)
-    is_center_vec = np.array([g in centers_set for g in nodes], dtype=bool)
+    # Base destination masses (legacy static base for fallback)
+    M_base_static = build_initial_masses(dfw, nodes, rkm_map, node_radii_km, centers)
 
-    # Time-only mass baselines per bin (binary: center vs non-center)
-    M_base_by_bin: List[np.ndarray] = []
-    for b in range(bins_per_day):
-        c_b = float(_CENTER_MASS_BASELINE_BY_BIN[b])
-        p_b = float(_PERIPH_MASS_BASELINE_BY_BIN[b])
+    # Build daily pattern once, using time-varying absolute per-class masses if enabled
+    P_daily = []
+    for mday in minutes_in_day:
+        b = _minute_to_bin(mday) % bins_per_day
 
-        if MASS_SCHEDULE_MODE == "multiplier":
-            # scale the static pattern per class
-            factors = np.where(is_center_vec, c_b, p_b)
-            M_b = np.maximum(M_base0 * factors, 0.0)
-        else:  # "absolute"
-            # replace by absolute class levels
-            M_b = np.where(is_center_vec, c_b, p_b).astype(float)
-            M_b = np.maximum(M_b, 0.0)
+        if ENABLE_MASS_BASE_SCHEDULE and MASS_TIME_MODE == "absolute":
+            # Absolute per-class masses per bin; no radial blending
+            mass_center_bin  = float(_CENTER_MASS_BASELINE_BY_BIN[b])
+            mass_periph_bin  = float(_PERIPH_MASS_BASELINE_BY_BIN[b])
+            M_base_bin = np.where(
+                np.array([g in set(centers) for g in nodes], dtype=bool),
+                mass_center_bin,
+                mass_periph_bin
+            ).astype(float)
+        else:
+            # Fallback to legacy static base
+            M_base_bin = M_base_static
 
-        if MASS_BASELINE_NORMALIZE == "mean1":
-            M_b = M_b / (M_b.mean() + 1e-12)
-
-        M_base_by_bin.append(M_b)
-
-    # Build daily pattern once
-    # Build daily pattern once (mass varies by bin, no radial blending)
-    P_daily = [
-        build_P_for_minute(
-            nodes=nodes,
-            rkm_map=rkm_map,
-            centers_set=centers_set,
-            minute_of_day=mday,
-            M_base=M_base_by_bin[b],
-            nb_idx=nb_idx,
-            nb_dist=nb_dist,
+        P_daily.append(
+            build_P_for_minute(
+                nodes, rkm_map, set(centers),
+                mday, M_base_bin, nb_idx, nb_dist
+            )
         )
-        for b, mday in enumerate(minutes_in_day)
-]
 
 
     # Initial state x0
@@ -2217,10 +2209,13 @@ def generate():
             "stay_periphery_segments": PERIPH_STAY_SCHEDULE,
             "time_res_min": int(TIME_RES_MIN),  # already there, but make sure it is
             "mass_schedule_enabled": bool(ENABLE_MASS_BASE_SCHEDULE),
-            "mass_schedule_mode": MASS_SCHEDULE_MODE,
-            "mass_baseline_normalize": MASS_BASELINE_NORMALIZE,
-            "center_mass_segments": CENTER_MASS_SCHEDULE,
-            "periphery_mass_segments": PERIPH_MASS_SCHEDULE,
+            "mass_time_mode": MASS_TIME_MODE,
+            "mass_initial_baselines": {
+                "center": float(MASS_BASE_MODE[0]),
+                "periphery": float(MASS_BASE_MODE[1]),
+            },
+            "mass_center_segments": CENTER_MASS_SCHEDULE,
+            "mass_periphery_segments": PERIPH_MASS_SCHEDULE,
 
         },
     )
@@ -2465,6 +2460,15 @@ def generate():
         sched_path = os.path.join(OUTPUT_DIR, f"pep_stay_baseline_schedule_{tag}.csv")
         sched_df.to_csv(sched_path, index=False)
         info(f"[WRITE] stay baseline schedule (per bin): {sched_path}")
+        mass_sched_df = pd.DataFrame({
+            "_bin_idx": np.arange(bins_per_day, dtype=int),
+            "_bin_lab": labs,
+            "center_mass": _CENTER_MASS_BASELINE_BY_BIN if _CENTER_MASS_BASELINE_BY_BIN is not None else [],
+            "periph_mass": _PERIPH_MASS_BASELINE_BY_BIN if _PERIPH_MASS_BASELINE_BY_BIN is not None else [],
+        })
+        mass_sched_path = os.path.join(OUTPUT_DIR, f"pep_mass_baseline_schedule_{tag}.csv")
+        mass_sched_df.to_csv(mass_sched_path, index=False)
+        info(f"[WRITE] mass baseline schedule (per bin): {mass_sched_path}")
     except Exception as _e:
         warn(f"[STAY-SCHED] failed to write schedule CSV: {_e}")
 
