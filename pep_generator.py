@@ -168,7 +168,7 @@ ENABLE_DIAG_DAILY             = True
 # Destination masses: center-heavy all day; start state slightly periphery-biased.
 MASS_INIT_MODE     = "center_periph"  # "flat" # 
 MASS_INIT_HOUR_SET = None
-INIT_X_MODE        = "center_periph"  # "flat" # 
+INIT_X_MODE        = "periodic_fixed_point" # "center_periph"  # "flat" # 
 
 
 DETERMINISTIC_INITIAL_ASSIGNMENT = True  # new global toggle
