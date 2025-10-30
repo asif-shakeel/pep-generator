@@ -1,30 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-pep_generator.py — Scheduled directional bias, geometric center selection, pairwise distance envelopes,
-and random-bucket assignment for mass and initial population.
+pep_generator.py — Directional-bias painter, sticky schedules, random bucket mass/x (independent or coupled),
+center selection (geometric/inflow/fixed/file), neighbor graphs, and pairwise distance envelopes.
 
 Highlights
-- No radial g(r) modulation. "Center" is a classification only (selection modes below).
-- Directional bias is scheduled with sticky (hold) semantics and end-exclusive segments.
-- Pairwise distance envelopes (per origin→destination neighbor) for realistic hop-length sampling.
+- No radial g(r) modulation. "Center" is a classification only.
+- Directional bias supports scheduled ABS/MULT modes (with sticky painter semantics), plus fixed/phased compat.
+- Stay & Mass schedules share the same painter semantics (absolute vs multiplier); end times exclusive; midnight wrap.
+- Pairwise distance envelopes per (origin, neighbor); self-hop d_min=0, d_max in {1×diag, 2×diag}.
 - Neighbor schemes: lattice or knn (with inner-neighbor boost).
 - Center selection modes:
     CENTER_SELECTION_MODE ∈ {"rank_by_radius","radius_threshold","inflow_topk","fixed_ids","file"}
     CENTER_REFERENCE     ∈ {"inflow_centroid","all_nodes_centroid","custom"}
-- Random-bucket assignment modes:
-    MASS_ASSIGNMENT_MODE ∈ {"uniform","random_buckets"}
-    X_ASSIGNMENT_MODE    ∈ {"uniform","random_buckets"}
-- Manifest/run tags reflect schedules for reproducibility.
-- Aggregates CSV includes initial/final totals and shares.
+- Random bucket heterogeneity within groups (center/periph) for Mass and X:
+    - Independent or Coupled bucket modes
+    - Per-track ON/OFF switches
+    - Seeds for reproducibility
+    - Group totals preserved per bin (Mass) and at init (X)
+- Manifest/run tags reflect schedules, painter modes, and bucket configs.
+- Diagnostics CSVs include temporal partitions and population aggregates.
 
-This file is self-contained. You can import generate()/validate() or run the file directly.
+This file is self-contained. Import generate()/validate() or run directly.
 """
 from __future__ import annotations
 import os
 import json
 import math
-from typing import Dict, Tuple, List, Optional, Iterable, Union
+from typing import Dict, Tuple, List, Optional, Iterable
 
 import numpy as np
 import pandas as pd
@@ -64,7 +67,7 @@ SWEEP_START_DATE = "2019-07-01"   # inclusive
 SWEEP_END_DATE   = "2019-07-10"   # inclusive
 WINDOW_START_HH  = 0               # inclusive
 WINDOW_END_HH    = 24              # exclusive
-TIME_RES_MIN     = 180              # bin size (minutes)
+TIME_RES_MIN     = 180             # bin size (minutes)
 
 # =========================
 # Files / randomness
@@ -116,16 +119,16 @@ ENABLE_NEIGHBOR_DIAGNOSTICS = False
 # =========================
 # Center selection (geometric + inflow + fixed/file)
 # =========================
-CENTER_SELECTION_MODE = "rank_by_radius"  # {"rank_by_radius","radius_threshold","inflow_topk","fixed_ids","file"}
+CENTER_SELECTION_MODE = "rank_by_radius"      # {"rank_by_radius","radius_threshold","inflow_topk","fixed_ids","file"}
 CENTER_REFERENCE      = "all_nodes_centroid"  # {"inflow_centroid","all_nodes_centroid","custom"}
-CENTER_REF_LATLON     = (19.4326, -99.1332)  # used if CENTER_REFERENCE=="custom"  (lat, lon)
-CENTER_RADIUS_KM      = 3.0   # used if mode=="radius_threshold"
-CENTER_TOPK           = 3     # used if mode in {"rank_by_radius","inflow_topk"}
-CENTER_FIXED_IDS      = []    # used if mode=="fixed_ids"
+CENTER_REF_LATLON     = (19.4326, -99.1332)   # used if CENTER_REFERENCE=="custom"  (lat, lon)
+CENTER_RADIUS_KM      = 3.0                   # used if mode=="radius_threshold"
+CENTER_TOPK           = 3                     # used if mode in {"rank_by_radius","inflow_topk"}
+CENTER_FIXED_IDS      = []                    # used if mode=="fixed_ids"
 CENTER_FILE_PATH      = os.path.join(DATA_DIR, "center_ids.txt")  # file with one geohash5 per line if mode=="file"
 
 # =========================
-# Stay probabilities (center/periphery, flat or scheduled)
+# Stay probabilities (center/periphery, schedule painter)
 # =========================
 P_STAY_BASE_MODE = (0.1, 0.9)  # (center, periphery) if no schedule
 ENABLE_STAY_BASE_SCHEDULE = True
@@ -140,9 +143,11 @@ PERIPH_STAY_SCHEDULE = [
 ]
 # Optional AM/PM tilt; +s(t) increases center, decreases periphery
 LAMBDA_STAY = 0.0
-# P_STAY_BASE_MODE = (0.1, 0.9)  # (center, periphery) if no schedule
+
+# P_STAY_BASE_MODE = (0.1, 0.9)  # (center, periphery) base if no schedule
 # ENABLE_STAY_BASE_SCHEDULE = True
 # STAY_SCHEDULE_MODE = "absolute"    # {"absolute","multiplier"}
+
 # CENTER_STAY_SCHEDULE = [
 #     ("06:00", "09:00", 0.9),
 #     ("15:00", "21:00", 0.1),
@@ -155,7 +160,7 @@ LAMBDA_STAY = 0.0
 # LAMBDA_STAY = 0.0
 
 # =========================
-# Destination "mass" levels (center/periphery, flat or scheduled)
+# Destination "mass" levels (center/periphery, schedule painter)
 # =========================
 MASS_INIT_MODE = "center_periph"  # {"flat","template_inflow_day0","template_window_mean","center_periph"}
 MASS_CENTER_PERIPH = (20.0, 1.0)   # if MASS_INIT_MODE=="center_periph"
@@ -174,12 +179,15 @@ PERIPH_MASS_SCHEDULE = [
 ]
 
 # MASS_INIT_MODE = "center_periph"  # {"flat","template_inflow_day0","template_window_mean","center_periph"}
-# MASS_CENTER_PERIPH = (20.0, 1.0)   # if MASS_INIT_MODE=="center_periph"
+# MASS_CENTER_PERIPH = (20.0, 1.0)  # if MASS_INIT_MODE=="center_periph"
 
 # ENABLE_MASS_BASE_SCHEDULE = True
+# # Preferred new name:
 # MASS_SCHEDULE_MODE = "absolute"    # {"absolute","multiplier"}
-# MASS_TIME_MODE = "absolute"        # kept for backward-compat (ignored if MASS_SCHEDULE_MODE provided)
-# MASS_BASE_MODE = (1.0, 20.0)       # starting levels for schedule painting (center, periphery)
+# # Backward-compat: if MASS_TIME_MODE is set elsewhere, we honor it; else use MASS_SCHEDULE_MODE
+# MASS_TIME_MODE = MASS_SCHEDULE_MODE
+
+# MASS_BASE_MODE = (1.0, 20.0)      # starting levels for schedule painting (center, periphery)
 # CENTER_MASS_SCHEDULE = [
 #     ("06:00", "09:00", 20.0),
 #     ("15:00", "21:00", 1.0),
@@ -189,13 +197,6 @@ PERIPH_MASS_SCHEDULE = [
 #     ("15:00", "21:00", 20.0),
 # ]
 
-# ===== Random-bucket assignment for Mass =====
-MASS_ASSIGNMENT_MODE = "uniform"  # {"uniform","random_buckets"}
-# Dicts: {percent_of_tiles: percent_of_group_mass} — keys and values each sum to 100, none zero
-MASS_BUCKETS_CENTER: Dict[int,int] = {10: 70, 90: 30}
-MASS_BUCKETS_PERIPH: Dict[int,int] = {20: 50, 80: 50}
-MASS_RANDOM_SEED: Optional[int] = None  # defaults to SEED if None
-
 # =========================
 # Initial population X (who starts where)
 # =========================
@@ -203,11 +204,29 @@ INIT_X_MODE = "center_periph"  # {"flat","template_inflow_day0","template_window
 X_CENTER_PERIPH = (1.0, 10.0)  # used if INIT_X_MODE=="center_periph"
 DETERMINISTIC_INITIAL_ASSIGNMENT = True
 
-# ===== Random-bucket assignment for x0 =====
+# ===== Random-bucket assignment for Mass (independent mode) =====
+MASS_ASSIGNMENT_MODE = "random_buckets"  # {"uniform","random_buckets"}
+# Dicts: {percent_of_tiles: percent_of_group_mass} — keys and values each sum to 100, none zero
+MASS_BUCKETS_CENTER: Dict[int,int] = {100: 100}
+MASS_BUCKETS_PERIPH: Dict[int,int] = {20: 80, 80: 20}
+MASS_RANDOM_SEED: Optional[int] = None  # defaults to SEED if None
+
+# ===== Random-bucket assignment for x0 (independent mode) =====
 X_ASSIGNMENT_MODE = "uniform"  # {"uniform","random_buckets"}
 X_BUCKETS_CENTER: Dict[int,int] = {20: 60, 80: 40}
 X_BUCKETS_PERIPH: Dict[int,int] = {10: 20, 90: 80}
 X_RANDOM_SEED: Optional[int] = None  # defaults to SEED if None
+
+# ===== COUPLED bucket assignment manager =====
+BUCKETS_ASSIGNMENT_MODE = "independent"  # {"independent","coupled"}
+# When "coupled", each entry is {tile_pct: (mass_pct, x_pct)} with each track summing to 100
+BUCKETS_CENTER: Dict[int, Tuple[int,int]] = {20: (30, 60), 80: (70, 40)}
+BUCKETS_PERIPH: Dict[int, Tuple[int,int]] = {20: (50, 20), 80: (50, 80)}
+BUCKETS_RANDOM_SEED: Optional[int] = None  # defaults to SEED if None
+
+# ===== Randomization ON/OFF switches (per track) =====
+ENABLE_MASS_RANDOMIZATION = True
+ENABLE_X_RANDOMIZATION    = False
 
 # =========================
 # Directional bias (scheduled multipliers)
@@ -219,28 +238,30 @@ DIRBIAS_BASE = (1.0, 1.0)      # used only if "multiplier"
 
 # Schedules are piecewise-linear across bins; values are multipliers (>=0)
 DIRBIAS_IN_SCHEDULE = [
-    ("06:00","09:00", 10),   # periph -> center boost AM
+    ("06:00","09:00", 4),   # periph -> center boost AM
     ("15:00","21:00", 1),   # taper evening
 ]
 DIRBIAS_OUT_SCHEDULE = [
     ("06:00","09:00", 1),   # dampen center -> periph AM
-    ("15:00","21:00", 10),   # boost evening egress
+    ("15:00","21:00", 4),   # boost evening egress
     ("21:00","00:00", 1),   # boost evening egress
 ]
 
 # ENABLE_DIRECTIONAL_BIAS = True
 # DIRBIAS_MODE = "scheduled"     # {"scheduled","fixed","phased"}
-# DIRBIAS_SCHEDULE_MODE = "absolute"  # {"absolute","multiplier"}
-# DIRBIAS_BASE = (1.0, 1.0)      # base curves for scheduled mode
 
-# # Schedules are piecewise-linear across bins; values are multipliers (>=0)
+# # For "scheduled": both arrays painted over baselines; same painter semantics as stay/mass
+# DIRBIAS_SCHEDULE_MODE = "absolute"  # {"absolute","multiplier"}
+# DIRBIAS_BASE = (1.0, 1.0)      # base used for "absolute" seeding and "multiplier" base outside segments
+
+# # Schedules are piecewise-linear; values are multipliers (>=0)
 # DIRBIAS_IN_SCHEDULE = [
-#     ("06:00","09:00", 10),   # periph -> center boost AM
-#     ("15:00","21:00", 1),    # taper evening
+#     ("06:00","09:00", 10),  # periph -> center boost AM (persists until 15:00 in ABS mode)
+#     ("15:00","21:00", 1),   # taper evening
 # ]
 # DIRBIAS_OUT_SCHEDULE = [
-#     ("06:00","09:00", 1),    # dampen center -> periph AM
-#     ("15:00","21:00", 10),   # boost evening egress
+#     ("06:00","09:00", 1),   # dampen center -> periph AM
+#     ("15:00","21:00", 10),  # boost evening egress
 # ]
 
 # Legacy compat
@@ -265,7 +286,7 @@ TOTAL_PER_BIN_FIXED = 12000
 # Pairwise distance envelopes
 # =========================
 ENABLE_PAIRWISE_DISTANCE_ENVELOPES = True
-SELF_DISTANCE_MODE = "double_diag"  # {"single_diag","double_diag"}
+SELF_DISTANCE_MODE = "double_diag"  # {"single_diag","double_diag"}  # self_min=0 for both; self_max per mode
 DUMP_PAIRWISE_ENVELOPES_JSON = False  # Optional debug dump
 
 # =========================
@@ -441,7 +462,6 @@ def infer_centers_by_inflow(df: pd.DataFrame, k: int) -> List[str]:
     return list(s.head(k).index.astype(str))
 
 def _centroid_of_inflow(df: pd.DataFrame) -> Tuple[float,float]:
-    # Weighted by inbound counts (end nodes)
     if COUNT_COL not in df.columns:
         s = df[END_COL].value_counts()
     else:
@@ -665,7 +685,7 @@ def neighbor_indices(nodes: List[str], K: int, scheme: str, max_rings: int) -> T
     return _knn_neighbor_indices(nodes, int(K))
 
 # =========================
-# Schedules & painter helpers (with HOLD semantics)
+# Painter helpers (sticky ABS/MULT with wrap)
 # =========================
 def _parse_hhmm(hhmm: str) -> int:
     hh, mm = hhmm.split(":"); return int(hh) * 60 + int(mm)
@@ -673,209 +693,118 @@ def _parse_hhmm(hhmm: str) -> int:
 def _minute_to_bin(minute_of_day: int) -> int:
     return int((minute_of_day - WINDOW_START_HH * 60) // TIME_RES_MIN)
 
-def _segment_bins(lo_min: int, hi_min: int, bins_per_day: int) -> List[int]:
+def _apply_segment_absolute(arr: np.ndarray, lo_bin: int, hi_bin: int, target) -> None:
     """
-    Convert a [start, end) minute range into covered bin indices (end-exclusive).
-    Handles wrap across midnight. Interprets end="00:00" as 24:00 if start>end.
+    Absolute mode semantics:
+    - If target is scalar v: ramp from current arr[lo_bin] to v over [lo..hi], then hold v after hi.
+    - If target is tuple (v0, v1): ramp from v0 at lo to v1 at hi, then hold v1 after hi.
+    End index inclusive; end time exclusive has already been converted to hi_bin.
     """
-    if bins_per_day <= 0:
-        return []
-
-    wrap = lo_min > hi_min
-    if wrap and hi_min == 0:
-        hi_for_tail = 24 * 60
-    else:
-        hi_for_tail = hi_min
-
-    def end_excl_to_last_bin(end_min: int) -> int:
-        last_min = max(0, end_min - 1)
-        return max(0, min(bins_per_day - 1, _minute_to_bin(last_min)))
-
-    lo_bin = max(0, min(bins_per_day - 1, _minute_to_bin(lo_min)))
-
-    if not wrap:
-        hi_bin = end_excl_to_last_bin(hi_for_tail)
-        if hi_bin < lo_bin:
-            return []
-        return list(range(lo_bin, hi_bin + 1))
-
-    hi_bin_tail = end_excl_to_last_bin(hi_for_tail)
-    bins = list(range(lo_bin, bins_per_day))
-    if hi_min > 0:
-        hi_bin_head = end_excl_to_last_bin(hi_min)
-        bins += list(range(0, hi_bin_head + 1))
-    return bins
-
-def _ramp_fill(arr: np.ndarray, bins: List[int], start_val: float, end_val: float) -> None:
-    """
-    Linearly ramp arr over 'bins' from start_val at bins[0] to end_val at bins[-1].
-    One-bin span becomes an immediate set to end_val.
-    """
-    if not bins:
+    B = arr.size
+    lo = max(0, min(B-1, lo_bin))
+    hi = max(0, min(B-1, hi_bin))
+    if hi < lo:
         return
-    if len(bins) == 1:
-        arr[bins[0]] = float(end_val)
-        return
-    seg = np.linspace(float(start_val), float(end_val), num=len(bins))
-    for k, b in enumerate(bins):
-        arr[b] = float(seg[k])
-
-def _build_array_with_hold(
-    base_val: float,
-    schedule: List[Tuple[str,str,Union[float,Tuple[float,float]]]],
-    mode: str,
-    bins_per_day: int,
-    clip01: bool
-) -> np.ndarray:
-    """
-    Generic painter with HOLD semantics.
-    mode: "absolute" | "multiplier"
-    - absolute: seed to base_val; scalar target c ramps current→c; tuple (v0,v1) ramps v0→v1
-    - multiplier: seed factor=1; scalar c ramps 1→c; tuple (c0,c1) ramps c0→c1; final=base*factor
-    clip01: if True, clip to [0,1] at end (useful for stay arrays)
-    """
-    mode = (mode or "absolute").lower()
-    if mode == "absolute":
-        arr = np.full(bins_per_day, float(base_val), dtype=float)
-        painted = np.zeros(bins_per_day, dtype=bool)
-        for (t0s, t1s, tgt) in (schedule or []):
-            lo_min, hi_min = _parse_hhmm(t0s), _parse_hhmm(t1s)
-            bins = _segment_bins(lo_min, hi_min, bins_per_day)
-            if not bins:
-                continue
-            if isinstance(tgt, tuple):
-                _ramp_fill(arr, bins, float(tgt[0]), float(tgt[1]))
-            else:
-                start_val = float(arr[bins[0]])
-                _ramp_fill(arr, bins, start_val, float(tgt))
-            painted[bins] = True
-        for b in range(1, bins_per_day):
-            if not painted[b]:
-                arr[b] = arr[b-1]
-        return np.clip(arr, 0.0, 1.0) if clip01 else arr
-
-    base_arr = np.full(bins_per_day, float(base_val), dtype=float)
-    fac = np.ones(bins_per_day, dtype=float)
-    painted = np.zeros(bins_per_day, dtype=bool)
-    for (t0s, t1s, tgt) in (schedule or []):
-        lo_min, hi_min = _parse_hhmm(t0s), _parse_hhmm(t1s)
-        bins = _segment_bins(lo_min, hi_min, bins_per_day)
-        if not bins:
-            continue
-        if isinstance(tgt, tuple):
-            seg = np.linspace(float(tgt[0]), float(tgt[1]), len(bins))
+    if isinstance(target, (list, tuple)) and len(target) == 2:
+        v0, v1 = float(target[0]), float(target[1])
+        span = hi - lo
+        if span <= 0:
+            arr[lo] = v1
         else:
-            seg = np.linspace(1.0, float(tgt), len(bins))
-        for k, b in enumerate(bins):
-            fac[b] *= float(seg[k])
-        painted[bins] = True
-    for b in range(1, bins_per_day):
-        if not painted[b]:
-            fac[b] = fac[b-1]
-    out = base_arr * fac
-    return np.clip(out, 0.0, 1.0) if clip01 else out
+            ramp = np.linspace(v0, v1, span + 1, dtype=float)
+            arr[lo:hi+1] = ramp
+        if hi + 1 < B:
+            arr[hi+1:] = v1
+    else:
+        v = float(target)
+        start_val = float(arr[lo])
+        span = hi - lo
+        if span <= 0:
+            arr[lo] = v
+        else:
+            ramp = np.linspace(start_val, v, span + 1, dtype=float)
+            arr[lo:hi+1] = ramp
+        if hi + 1 < B:
+            arr[hi+1:] = v
 
-def _build_dirbias_arrays(
-    base_in: float,
-    base_out: float,
-    sched_in: List[Tuple[str,str,Union[float,Tuple[float,float]]]],
-    sched_out: List[Tuple[str,str,Union[float,Tuple[float,float]]]],
-    mode: str,
-    bins_per_day: int
-) -> Tuple[np.ndarray, np.ndarray]:
-    kin  = _build_array_with_hold(base_in,  sched_in,  mode, bins_per_day, clip01=False)
-    kout = _build_array_with_hold(base_out, sched_out, mode, bins_per_day, clip01=False)
-    return kin, kout
+def _apply_segment_multiplier(factors: np.ndarray, lo_bin: int, hi_bin: int, target) -> None:
+    """
+    Multiplier mode semantics:
+    - If target is scalar c: ramp from 1 at lo to c at hi; multiply only bins [lo..hi].
+    - If target is tuple (c0, c1): ramp from c0 at lo to c1 at hi; multiply only [lo..hi].
+    Outside the segment, keep whatever multiplicative value was already there.
+    """
+    B = factors.size
+    lo = max(0, min(B-1, lo_bin))
+    hi = max(0, min(B-1, hi_bin))
+    if hi < lo:
+        return
+    if isinstance(target, (list, tuple)) and len(target) == 2:
+        c0, c1 = float(target[0]), float(target[1])
+        span = hi - lo
+        if span <= 0:
+            factors[lo] *= c1
+        else:
+            ramp = np.linspace(c0, c1, span + 1, dtype=float)
+            factors[lo:hi+1] *= ramp
+    else:
+        c = float(target)
+        span = hi - lo
+        if span <= 0:
+            factors[lo] *= c
+        else:
+            ramp = np.linspace(1.0, c, span + 1, dtype=float)
+            factors[lo:hi+1] *= ramp
 
-# =========================
-# Random-bucket helper utilities
-# =========================
-def _validate_bucket_spec(spec: Dict[int,int]) -> None:
-    if not spec:
-        raise ValueError("Bucket spec is empty.")
-    if any((k <= 0 or v <= 0) for k, v in spec.items()):
-        raise ValueError("Bucket spec keys/values must be positive and non-zero.")
-    if sum(spec.keys()) != 100:
-        raise ValueError(f"Bucket spec tile percentages must sum to 100 (got {sum(spec.keys())}).")
-    if sum(spec.values()) != 100:
-        raise ValueError(f"Bucket spec quantity percentages must sum to 100 (got {sum(spec.values())}).")
-
-def _largest_remainder_counts(n: int, percents: List[int]) -> List[int]:
-    exact = [p * n / 100.0 for p in percents]
-    floors = [int(math.floor(x)) for x in exact]
-    rem = n - sum(floors)
-    if rem > 0:
-        fracs = [(exact[i] - floors[i], i) for i in range(len(percents))]
-        fracs.sort(reverse=True)
-        for _, idx in fracs[:rem]:
-            floors[idx] += 1
-    return floors
-
-def _assign_tiles_to_buckets(tile_indices: np.ndarray, bucket_counts: List[int], rng: np.random.Generator) -> List[np.ndarray]:
-    n = tile_indices.size
-    if sum(bucket_counts) != n:
-        raise ValueError("Bucket counts must sum to number of tiles.")
-    rng.shuffle(tile_indices)
-    out = []
-    start = 0
-    for c in bucket_counts:
-        out.append(tile_indices[start:start+c])
-        start += c
+def _segments_to_bins(segments: List[tuple[str,str,object]], bins_per_day: int) -> List[Tuple[int,int,object]]:
+    """
+    Convert time segments to (lo_bin, hi_bin, target), with end-exclusive mapping:
+      lo_bin = bin(start)
+      hi_bin = bin(end - 1 minute), inclusive
+    Handles midnight wrap by splitting segments.
+    """
+    out: List[Tuple[int,int,object]] = []
+    for t0s, t1s, target in segments or []:
+        t0 = _parse_hhmm(t0s); t1 = _parse_hhmm(t1s)
+        def _push(lo_min: int, hi_min: int):
+            lo_bin = max(0, min(bins_per_day-1, _minute_to_bin(lo_min)))
+            hi_bin = max(0, min(bins_per_day-1, _minute_to_bin(hi_min)))
+            out.append((lo_bin, hi_bin, target))
+        if t0 < t1:
+            _push(t0, t1 - 1)
+        else:
+            _push(t0, 24*60 - 1)
+            _push(0,  t1 - 1)
     return out
 
-def _mass_factors_for_group(n_group: int, spec: Dict[int,int], rng: np.random.Generator, group_indices: np.ndarray) -> np.ndarray:
+def paint_curve(
+    bins_per_day: int,
+    base_value: float,
+    segments: List[tuple[str,str,object]],
+    mode: str,
+    clip: Optional[Tuple[float,float]] = None
+) -> np.ndarray:
     """
-    Produce per-tile factors whose average across the group is 1.0.
-    For a bucket with q% of quantity assigned to n_b tiles, factor = (q/100 * n_group) / n_b.
+    Build a 1-D curve with given painter semantics.
+    - base_value seeds the array everywhere initially.
+    - mode in {"absolute","multiplier"}.
+    - absolute: apply segments in order with sticky persistence post-segment.
+    - multiplier: build factor=1 array and multiply within covered bins only.
+    - clip: optional (low, high) bounds applied at the end.
     """
-    _validate_bucket_spec(spec)
-    tile_perc = list(spec.keys())
-    qty_perc  = list(spec.values())
-    if len(tile_perc) > n_group:
-        raise ValueError(f"Bucket count ({len(tile_perc)}) exceeds number of tiles in group ({n_group}).")
-
-    bucket_tile_counts = _largest_remainder_counts(n_group, tile_perc)
-    if any(c == 0 for c in bucket_tile_counts):
-        raise ValueError("A bucket would receive 0 tiles; refine tile percentages for the group size.")
-
-    # Assign tiles to buckets
-    buckets = _assign_tiles_to_buckets(group_indices.copy(), bucket_tile_counts, rng)
-
-    # Build factor array
-    factors = np.ones(n_group, dtype=float)
-    for b_idx, tiles in enumerate(buckets):
-        n_b = tiles.size
-        q_b = qty_perc[b_idx] / 100.0
-        f_b = (q_b * n_group) / float(n_b)  # guarantees group mean of 1.0
-        factors_indices = np.isin(group_indices, tiles)
-        factors[factors_indices] = f_b
-    return factors
-
-def _x_shares_for_group(total_share: float, n_group: int, spec: Dict[int,int], rng: np.random.Generator, group_indices: np.ndarray) -> np.ndarray:
-    """
-    Produce per-tile absolute shares for x0 that sum to total_share (group total).
-    Within each bucket, equal per tile: share = total_share * (q_b/100) / n_b.
-    """
-    _validate_bucket_spec(spec)
-    tile_perc = list(spec.keys())
-    qty_perc  = list(spec.values())
-    if len(tile_perc) > n_group:
-        raise ValueError(f"Bucket count ({len(tile_perc)}) exceeds number of tiles in group ({n_group}).")
-
-    bucket_tile_counts = _largest_remainder_counts(n_group, tile_perc)
-    if any(c == 0 for c in bucket_tile_counts):
-        raise ValueError("A bucket would receive 0 tiles; refine tile percentages for the group size.")
-
-    buckets = _assign_tiles_to_buckets(group_indices.copy(), bucket_tile_counts, rng)
-
-    shares = np.zeros(n_group, dtype=float)
-    for b_idx, tiles in enumerate(buckets):
-        n_b = tiles.size
-        q_b = qty_perc[b_idx] / 100.0
-        per_tile = (total_share * q_b) / float(n_b)
-        mask = np.isin(group_indices, tiles)
-        shares[mask] = per_tile
-    return shares
+    arr = np.full(bins_per_day, float(base_value), dtype=float)
+    segs = _segments_to_bins(segments, bins_per_day)
+    if mode == "absolute":
+        for lo, hi, target in segs:
+            _apply_segment_absolute(arr, lo, hi, target)
+    else:  # multiplier
+        factors = np.ones(bins_per_day, dtype=float)
+        for lo, hi, target in segs:
+            _apply_segment_multiplier(factors, lo, hi, target)
+        arr = arr * factors
+    if clip is not None:
+        arr = np.clip(arr, float(clip[0]), float(clip[1]))
+    return arr
 
 # =========================
 # Mass & X builders (no radial)
@@ -987,6 +916,113 @@ def _dirbias_for_bin(b: int, k_in_arr: np.ndarray, k_out_arr: np.ndarray) -> Tup
     return float(k_in_arr[int(b)]), float(k_out_arr[int(b)])
 
 # =========================
+# Random bucket helpers
+# =========================
+def _largest_remainder_partition(n: int, pct_list: List[int]) -> List[int]:
+    if n <= 0:
+        return [0] * len(pct_list)
+    if any(p <= 0 for p in pct_list):
+        raise ValueError("All percentages must be > 0.")
+    if sum(pct_list) != 100:
+        raise ValueError("Percentages must sum to 100.")
+    raw = [n * (p / 100.0) for p in pct_list]
+    base = [int(math.floor(x)) for x in raw]
+    remainder = [x - b for x, b in zip(raw, base)]
+    rem = n - sum(base)
+    order = np.argsort(remainder)[::-1]
+    for k in range(rem):
+        base[int(order[k])] += 1
+    return base
+
+def _random_bucket_indices(idx_list: List[int], pct_tiles: List[int], rng: np.random.Generator) -> List[np.ndarray]:
+    n = len(idx_list)
+    counts = _largest_remainder_partition(n, pct_tiles)
+    shuffled = np.array(idx_list, dtype=int).copy()
+    rng.shuffle(shuffled)
+    out = []
+    pos = 0
+    for c in counts:
+        out.append(shuffled[pos:pos + c])
+        pos += c
+    return out
+
+def _validate_bucket_specs_independent(bspec: Dict[int, int]) -> Tuple[List[int], List[int]]:
+    if not bspec:
+        raise ValueError("Bucket spec must be non-empty.")
+    keys = list(bspec.keys()); vals = list(bspec.values())
+    if any(k <= 0 for k in keys) or any(v <= 0 for v in vals):
+        raise ValueError("Bucket keys/values must be > 0.")
+    if sum(keys) != 100 or sum(vals) != 100:
+        raise ValueError("Bucket keys and values must each sum to 100.")
+    return keys, vals
+
+def _validate_bucket_specs_coupled(bspec: Dict[int, Tuple[int,int]]) -> Tuple[List[int], List[int], List[int]]:
+    if not bspec:
+        raise ValueError("Coupled bucket spec must be non-empty.")
+    tile_pcts = list(bspec.keys())
+    mass_pcts = [bspec[k][0] for k in tile_pcts]
+    x_pcts    = [bspec[k][1] for k in tile_pcts]
+    if any(k <= 0 for k in tile_pcts) or any(v <= 0 for v in mass_pcts) or any(w <= 0 for w in x_pcts):
+        raise ValueError("All percentages must be > 0 in coupled spec.")
+    if sum(tile_pcts) != 100 or sum(mass_pcts) != 100 or sum(x_pcts) != 100:
+        raise ValueError("In coupled spec, tile%, mass% and x% must each sum to 100.")
+    return tile_pcts, mass_pcts, x_pcts
+
+def _build_bucket_factors_for_group(
+    group_indices: List[int],
+    mode: str,
+    rng: np.random.Generator,
+    *,
+    enable_mass: bool,
+    enable_x: bool,
+    mass_indep_spec: Optional[Dict[int,int]] = None,
+    x_indep_spec: Optional[Dict[int,int]] = None,
+    coupled_spec: Optional[Dict[int,Tuple[int,int]]] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Returns (mass_factors, x_factors) arrays of length |group_indices|.
+    Factors are per-tile multipliers whose group-weighted mean is 1.0.
+    """
+    G = len(group_indices)
+    if G == 0:
+        return np.array([], dtype=float), np.array([], dtype=float)
+
+    mf = np.ones(G, dtype=float)
+    xf = np.ones(G, dtype=float)
+
+    if mode == "independent":
+        if enable_mass and mass_indep_spec:
+            t_pcts, m_pcts = _validate_bucket_specs_independent(mass_indep_spec)
+            buckets = _random_bucket_indices(group_indices, t_pcts, rng)
+            for tiles_pct, mass_pct, b_idx in zip(t_pcts, m_pcts, buckets):
+                if tiles_pct <= 0: continue
+                factor = (mass_pct / tiles_pct)
+                local_mask = np.isin(group_indices, b_idx)
+                mf[local_mask] = factor
+        if enable_x and x_indep_spec:
+            t_pcts2, x_pcts2 = _validate_bucket_specs_independent(x_indep_spec)
+            buckets2 = _random_bucket_indices(group_indices, t_pcts2, rng)
+            for tiles_pct, x_pct, b_idx in zip(t_pcts2, x_pcts2, buckets2):
+                if tiles_pct <= 0: continue
+                factor = (x_pct / tiles_pct)
+                local_mask = np.isin(group_indices, b_idx)
+                xf[local_mask] = factor
+        return mf, xf
+
+    # Coupled mode
+    if coupled_spec:
+        tile_pcts, mass_pcts, x_pcts = _validate_bucket_specs_coupled(coupled_spec)
+        buckets = _random_bucket_indices(group_indices, tile_pcts, rng)
+        for tiles_pct, m_pct, x_pct, b_idx in zip(tile_pcts, mass_pcts, x_pcts, buckets):
+            if tiles_pct <= 0: continue
+            mass_factor = (m_pct / tiles_pct) if enable_mass else 1.0
+            x_factor    = (x_pct / tiles_pct) if enable_x    else 1.0
+            local_mask = np.isin(group_indices, b_idx)
+            mf[local_mask] = mass_factor
+            xf[local_mask] = x_factor
+    return mf, xf
+
+# =========================
 # Markov builder with directional bias
 # =========================
 def _stay_prob_for_origin(is_center_origin: bool, minute_of_day: int, arr_c: np.ndarray, arr_p: np.ndarray) -> float:
@@ -1002,66 +1038,91 @@ def _stay_prob_for_origin(is_center_origin: bool, minute_of_day: int, arr_c: np.
 def build_P_for_bin(
     nodes: List[str],
     centers_set: set,
-    bin_index: int,
-    minute_of_day: int,
+    bin_index: int,                  # 0..bins_per_day-1
+    minute_of_day: int,              # for p_stay phase tilt
     M_base_vec: np.ndarray,
     nb_idx: np.ndarray,
     nb_dist: np.ndarray,
     arr_stay_center: np.ndarray,
     arr_stay_periph: np.ndarray,
-    k_in_arr: np.ndarray,
-    k_out_arr: np.ndarray,
+    k_in_arr: np.ndarray,            # now interpreted as inward gain schedule (Δr<0)
+    k_out_arr: np.ndarray,           # now interpreted as outward gain schedule (Δr>0)
+    radii_km: np.ndarray,            # NEW: per-node radius r_j (km) to reference
 ) -> np.ndarray:
+    """
+    Build a column-stochastic P for one bin with *radial sign–based* directional bias.
+
+    Reinterpretation:
+      - k_in_arr[b]  := inward multiplier for edges with Δr = r_i - r_j < 0
+      - k_out_arr[b] := outward multiplier for edges with Δr = r_i - r_j > 0
+      - lateral (Δr == 0) uses factor 1.0
+
+    All other mechanics (stay probability, neighbor boost, distance decay) remain unchanged.
+    """
     N, K = nb_idx.shape
 
+    # destination "mass" weights raised to alpha (gravity)
     Mw = np.power(np.maximum(M_base_vec, 0.0), ALPHA)
+
+    # stay multipliers for this bin
+    k_in  = float(k_in_arr[int(bin_index)])
+    k_out = float(k_out_arr[int(bin_index)])
+
+    # center membership still affects p_stay baselines
     is_center = np.array([g in centers_set for g in nodes], dtype=bool)
-    k_in, k_out = _dirbias_for_bin(bin_index, k_in_arr, k_out_arr)
 
     P = np.zeros((N, N), dtype=float)
     for j in range(N):
+        # Stay prob from schedules (unchanged logic)
         pst = _stay_prob_for_origin(bool(is_center[j]), minute_of_day, arr_stay_center, arr_stay_periph)
-        neigh = nb_idx[j]
-        distk = nb_dist[j]
 
+        neigh = nb_idx[j]          # neighbor indices for origin j (includes self)
+        distk = nb_dist[j]         # distances to those neighbors
+
+        # Base gravity weights
         if DIST_DECAY_MODE == "power":
             denom = np.power(np.maximum(distk, 1e-12), BETA)
             w = Mw[neigh] / denom
         else:
             w = Mw[neigh] * np.exp(-GAMMA_DECAY * distk)
 
+        # Inner neighbor boost (excluding self at rank 0)
         if NEIGHBOR_INNER_K > 0 and NEIGHBOR_BOOST not in (None, 1.0, 0.0):
             inner_mask = np.zeros_like(neigh, dtype=bool)
             inner_mask[1:min(NEIGHBOR_INNER_K, len(inner_mask))] = True
             w = w * np.where(inner_mask & (neigh != j), float(NEIGHBOR_BOOST), 1.0)
 
-        mask = (neigh != j)
-        neigh_noself = neigh[mask]
-        w_noself = w[mask]
+        # --- Apply radial sign bias ---
         if ENABLE_DIRECTIONAL_BIAS:
-            origin_center = bool(is_center[j])
-            mult = np.ones_like(w_noself)
-            for idx_r, i in enumerate(neigh_noself):
-                dest_center = bool(is_center[int(i)])
-                if (not origin_center) and dest_center:
-                    mult[idx_r] = float(k_in)
-                elif origin_center and (not dest_center):
-                    mult[idx_r] = float(k_out)
+            rj = float(radii_km[j])
+            for idx, i in enumerate(neigh):
+                if i == j:
+                    continue
+                dr = float(radii_km[int(i)] - rj)
+                if dr < 0.0:      # inward
+                    w[idx] *= k_in
+                elif dr > 0.0:    # outward
+                    w[idx] *= k_out
                 else:
-                    mult[idx_r] = 1.0
-            w_noself = w_noself * mult
+                    pass  # lateral edges unaffected
 
+        # Normalize to keep non-self edges proportional
+        mask = neigh != j
+        w_noself = w[mask]
         ssum = float(np.sum(w_noself))
         if ssum <= 0.0:
             P[j, j] = 1.0
             continue
-        w_noself = w_noself / ssum
 
+        w_noself /= ssum
+
+        # Assign probabilities
         P[j, j] = pst
         spread = 1.0 - pst
-        P[neigh_noself, j] += spread * w_noself
+        P[neigh[mask], j] += spread * w_noself
 
-        colsum = P[:, j].sum()
+        # Safety renormalization (column-stochastic guarantee)
+        colsum = np.sum(P[:, j])
         if colsum > 0:
             P[:, j] /= colsum
         else:
@@ -1076,6 +1137,7 @@ def run_dir_name() -> str:
     start_tag = pd.to_datetime(SWEEP_START_DATE).strftime("%Y-%m-%d")
     end_tag   = pd.to_datetime(SWEEP_END_DATE).strftime("%Y-%m-%d")
     nb_tag = f"nb-{NEIGHBOR_SCHEME}K{int(NEIGHBOR_K)}"
+    # tag directional bias
     if not ENABLE_DIRECTIONAL_BIAS:
         dirbias_tag = "dirbias-off"
     elif DIRBIAS_MODE == "scheduled":
@@ -1144,19 +1206,22 @@ def write_transitions(P_daily: List[np.ndarray], nodes: List[str], manifest_path
         "periph_stay_segments": PERIPH_STAY_SCHEDULE,
         "enable_mass_schedule": bool(ENABLE_MASS_BASE_SCHEDULE),
         "mass_schedule_mode": MASS_SCHEDULE_MODE,
-        "mass_time_mode": MASS_TIME_MODE,
         "mass_base_mode": MASS_BASE_MODE,
         "center_mass_segments": CENTER_MASS_SCHEDULE,
         "periph_mass_segments": PERIPH_MASS_SCHEDULE,
-        # random buckets
+        # buckets
+        "buckets_assignment_mode": BUCKETS_ASSIGNMENT_MODE,
+        "enable_mass_randomization": bool(ENABLE_MASS_RANDOMIZATION),
+        "enable_x_randomization": bool(ENABLE_X_RANDOMIZATION),
         "mass_assignment_mode": MASS_ASSIGNMENT_MODE,
         "mass_buckets_center": MASS_BUCKETS_CENTER,
         "mass_buckets_periph": MASS_BUCKETS_PERIPH,
-        "mass_random_seed": MASS_RANDOM_SEED,
         "x_assignment_mode": X_ASSIGNMENT_MODE,
         "x_buckets_center": X_BUCKETS_CENTER,
         "x_buckets_periph": X_BUCKETS_PERIPH,
-        "x_random_seed": X_RANDOM_SEED,
+        "buckets_center": BUCKETS_CENTER,
+        "buckets_periph": BUCKETS_PERIPH,
+        "buckets_random_seed": int(BUCKETS_RANDOM_SEED if BUCKETS_RANDOM_SEED is not None else SEED),
     }
     if extra_meta:
         meta.update(extra_meta)
@@ -1300,6 +1365,7 @@ def kl_l1_columns(P_emp: np.ndarray, P_mod: np.ndarray, mask: np.ndarray, eps: f
 # Distance envelopes (pairwise min/max)
 # =========================
 def _cell_halfspan_km() -> float:
+    # crude half-diagonal estimate for self hops
     return float(CELL_DIAG_KM_EST * 0.5)
 
 def _pairwise_envelopes(
@@ -1316,13 +1382,9 @@ def _pairwise_envelopes(
     envelopes: Dict[int, Dict[int, Tuple[float,float]]] = {}
     diag = float(CELL_DIAG_KM_EST)
 
-    # Self-hop distance envelope: min is 0, max depends on mode
-    if SELF_DISTANCE_MODE == "double_diag":
-        self_min = 0.0
-        self_max = 2.0 * diag
-    else:  # "single_diag"
-        self_min = 0.0
-        self_max = 1.0 * diag
+    # Self-hop envelopes: min = 0.0 (fix), max depends on mode
+    self_min = 0.0
+    self_max = 2.0*diag if SELF_DISTANCE_MODE == "double_diag" else diag
 
     for j in range(N):
         envelopes[j] = {}
@@ -1443,48 +1505,6 @@ def generate():
     # --- Run folder ---
     run_paths = ensure_run_dirs()
 
-    # --- Precompute stay baselines (center/periphery) ---
-    if ENABLE_STAY_BASE_SCHEDULE:
-        c0, p0 = P_STAY_BASE_MODE
-        arr_c = _build_array_with_hold(c0, CENTER_STAY_SCHEDULE, STAY_SCHEDULE_MODE, bins_per_day, clip01=True)
-        arr_p = _build_array_with_hold(p0, PERIPH_STAY_SCHEDULE, STAY_SCHEDULE_MODE, bins_per_day, clip01=True)
-    else:
-        c0, p0 = P_STAY_BASE_MODE
-        arr_c = np.full(bins_per_day, float(c0), dtype=float)
-        arr_p = np.full(bins_per_day, float(p0), dtype=float)
-
-    # --- Directional bias arrays ---
-    if ENABLE_DIRECTIONAL_BIAS:
-        if DIRBIAS_MODE == "scheduled":
-            k_in_arr, k_out_arr = _build_dirbias_arrays(
-                base_in=DIRBIAS_BASE[0],
-                base_out=DIRBIAS_BASE[1],
-                sched_in=DIRBIAS_IN_SCHEDULE,
-                sched_out=DIRBIAS_OUT_SCHEDULE,
-                mode=DIRBIAS_SCHEDULE_MODE,
-                bins_per_day=bins_per_day
-            )
-        elif DIRBIAS_MODE == "fixed":
-            k_in_arr  = np.full(bins_per_day, float(DIRBIAS_FIXED[0]), dtype=float)
-            k_out_arr = np.full(bins_per_day, float(DIRBIAS_FIXED[1]), dtype=float)
-        else:
-            k_in_arr, k_out_arr = _phase_map_to_arrays(bins_per_day)
-    else:
-        k_in_arr = k_out_arr = np.ones(bins_per_day, dtype=float)
-
-    if WRITE_DIRBIAS_PREVIEW_CSV:
-        prev = pd.DataFrame({
-            "bin_idx": np.arange(bins_per_day, dtype=int),
-            "bin_label": [f"{(WINDOW_START_HH*60 + b*TIME_RES_MIN)//60:02d}:{(WINDOW_START_HH*60 + b*TIME_RES_MIN)%60:02d}" for b in range(bins_per_day)],
-            "k_in": k_in_arr.astype(float),
-            "k_out": k_out_arr.astype(float),
-        })
-        path_prev = os.path.join(run_paths["run"], f"pep_dirbias_schedule_preview_m{TIME_RES_MIN}.csv")
-        prev.to_csv(path_prev, index=False)
-        kin_min, kin_max = float(k_in_arr.min()), float(k_in_arr.max())
-        kout_min, kout_max = float(k_out_arr.min()), float(k_out_arr.max())
-        info(f"[WRITE] directional bias preview: {path_prev} (k_in[{kin_min:.3g},{kin_max:.3g}], k_out[{kout_min:.3g},{kout_max:.3g}])")
-
     # --- Template & region filter ---
     if USE_TEMPLATE and os.path.exists(TEMPLATE_PATH):
         tpl = pd.read_csv(TEMPLATE_PATH)
@@ -1495,6 +1515,7 @@ def generate():
             raise ValueError("No nodes discovered from template after region filter.")
         info(f"NODES (unique geohash{GEOHASH_PRECISION}): {len(nodes)}")
 
+        # Center selection (geometric/inflow/fixed/file)
         centers = select_centers(
             nodes=nodes,
             dfw=dfw,
@@ -1511,9 +1532,66 @@ def generate():
         raise FileNotFoundError("Template required (USE_TEMPLATE=True).")
 
     centers_set = set(centers)
+
+    # --- Radial reference and per-node radii (km) for radial sign bias ---
+    ref_lat, ref_lon = _center_reference_latlon(
+        nodes=nodes,
+        dfw=dfw,
+        mode=CENTER_REFERENCE,
+        custom_latlon=CENTER_REF_LATLON,
+    )
+    # Haversine distance from each node to the reference → radius r_j
+    radii_km = np.array(
+        [haversine_km(ref_lat, ref_lon, *geohash_decode(g)) for g in nodes],
+        dtype=float
+    )
+
+
     is_center_mask = np.array([g in centers_set for g in nodes], dtype=bool)
     idx_center = np.where(is_center_mask)[0]
     idx_periph = np.where(~is_center_mask)[0]
+
+    # --- Precompute stay baselines (center/periphery) with painter ---
+    if ENABLE_STAY_BASE_SCHEDULE:
+        c0, p0 = P_STAY_BASE_MODE
+        arr_stay_c = paint_curve(bins_per_day, base_value=float(c0), segments=CENTER_STAY_SCHEDULE,
+                                 mode=STAY_SCHEDULE_MODE, clip=(0.0, 1.0))
+        arr_stay_p = paint_curve(bins_per_day, base_value=float(p0), segments=PERIPH_STAY_SCHEDULE,
+                                 mode=STAY_SCHEDULE_MODE, clip=(0.0, 1.0))
+    else:
+        c0, p0 = P_STAY_BASE_MODE
+        arr_stay_c = np.full(bins_per_day, float(c0), dtype=float)
+        arr_stay_p = np.full(bins_per_day, float(p0), dtype=float)
+
+    # --- Directional bias arrays (k_in, k_out) using painter ---
+    if ENABLE_DIRECTIONAL_BIAS:
+        if DIRBIAS_MODE == "scheduled":
+            # Absolute: seeded with DIRBIAS_BASE and sticky between segments
+            # Multiplier: base is DIRBIAS_BASE; segments multiply factors only where painted
+            k_in_arr  = paint_curve(bins_per_day, base_value=float(DIRBIAS_BASE[0]),
+                                    segments=DIRBIAS_IN_SCHEDULE,  mode=DIRBIAS_SCHEDULE_MODE, clip=None)
+            k_out_arr = paint_curve(bins_per_day, base_value=float(DIRBIAS_BASE[1]),
+                                    segments=DIRBIAS_OUT_SCHEDULE, mode=DIRBIAS_SCHEDULE_MODE, clip=None)
+        elif DIRBIAS_MODE == "fixed":
+            k_in_arr  = np.full(bins_per_day, float(DIRBIAS_FIXED[0]), dtype=float)
+            k_out_arr = np.full(bins_per_day, float(DIRBIAS_FIXED[1]), dtype=float)
+        else:  # legacy phased
+            k_in_arr, k_out_arr = _phase_map_to_arrays(bins_per_day)
+    else:
+        k_in_arr = k_out_arr = np.ones(bins_per_day, dtype=float)
+
+    if WRITE_DIRBIAS_PREVIEW_CSV:
+        prev = pd.DataFrame({
+            "bin_idx": np.arange(bins_per_day, dtype=int),
+            "bin_label": [f"{(WINDOW_START_HH*60 + b*TIME_RES_MIN)//60:02d}:{(WINDOW_START_HH*60 + b*TIME_RES_MIN)%60:02d}" for b in range(bins_per_day)],
+            "k_in": k_in_arr.astype(float),
+            "k_out": k_out_arr.astype(float),
+        })
+        path_prev = os.path.join(run_paths["run"], f"pep_dirbias_schedule_preview_m{TIME_RES_MIN}.csv")
+        prev.to_csv(path_prev, index=False)
+        kin_min, kin_max = float(k_in_arr.min()), float(k_in_arr.max())
+        kout_min, kout_max = float(k_out_arr.min()), float(k_out_arr.max())
+        info(f"[WRITE] directional bias preview: {path_prev} (k_in[{kin_min:.3g},{kin_max:.3g}], k_out[{kout_min:.3g},{kout_max:.3g}])")
 
     # --- Neighbor graph ---
     nb_idx, nb_dist = neighbor_indices(nodes, NEIGHBOR_K, NEIGHBOR_SCHEME, NEIGHBOR_MAX_RINGS)
@@ -1532,63 +1610,65 @@ def generate():
                 json.dump(dump, f, indent=2)
             info(f"[WRITE] pairwise envelopes JSON: {env_path}")
 
-    # --- Mass baselines (scheduled arrays per bin) ---
+    # --- Mass baselines: static (init) & per-bin painter curves ---
     M_base_static = build_initial_masses(dfw, nodes, centers)
-    if ENABLE_MASS_BASE_SCHEDULE:
-        mass_mode = str(MASS_SCHEDULE_MODE or MASS_TIME_MODE)
-        center_mass_arr = _build_array_with_hold(MASS_BASE_MODE[0], CENTER_MASS_SCHEDULE, mass_mode, bins_per_day, clip01=False)
-        periph_mass_arr = _build_array_with_hold(MASS_BASE_MODE[1], PERIPH_MASS_SCHEDULE, mass_mode, bins_per_day, clip01=False)
-    else:
-        center_mass_arr = np.full(bins_per_day, float(MASS_BASE_MODE[0]), dtype=float)
-        periph_mass_arr = np.full(bins_per_day, float(MASS_BASE_MODE[1]), dtype=float)
 
-    # --- Random-bucket MASS factors (within-group; mean=1) ---
-    mass_rng = np.random.default_rng(SEED if MASS_RANDOM_SEED is None else MASS_RANDOM_SEED)
+    # --- Bucket factors (per-tile, sticky across all bins) ---
+    # Use BUCKETS_RANDOM_SEED if provided, else SEED
+    rng_buckets = np.random.default_rng(BUCKETS_RANDOM_SEED if (BUCKETS_RANDOM_SEED is not None) else SEED)
+    if BUCKETS_ASSIGNMENT_MODE == "coupled":
+        c_mf, c_xf = _build_bucket_factors_for_group(
+            idx_center.tolist(), mode="coupled", rng=rng_buckets,
+            enable_mass=ENABLE_MASS_RANDOMIZATION, enable_x=ENABLE_X_RANDOMIZATION,
+            coupled_spec=BUCKETS_CENTER,
+        )
+        p_mf, p_xf = _build_bucket_factors_for_group(
+            idx_periph.tolist(), mode="coupled", rng=rng_buckets,
+            enable_mass=ENABLE_MASS_RANDOMIZATION, enable_x=ENABLE_X_RANDOMIZATION,
+            coupled_spec=BUCKETS_PERIPH,
+        )
+    else:  # "independent"
+        c_mf, c_xf = _build_bucket_factors_for_group(
+            idx_center.tolist(), mode="independent", rng=rng_buckets,
+            enable_mass=ENABLE_MASS_RANDOMIZATION, enable_x=ENABLE_X_RANDOMIZATION,
+            mass_indep_spec=MASS_BUCKETS_CENTER, x_indep_spec=X_BUCKETS_CENTER,
+        )
+        p_mf, p_xf = _build_bucket_factors_for_group(
+            idx_periph.tolist(), mode="independent", rng=rng_buckets,
+            enable_mass=ENABLE_MASS_RANDOMIZATION, enable_x=ENABLE_X_RANDOMIZATION,
+            mass_indep_spec=MASS_BUCKETS_PERIPH, x_indep_spec=X_BUCKETS_PERIPH,
+        )
     mass_factors = np.ones(len(nodes), dtype=float)
-    if MASS_ASSIGNMENT_MODE == "random_buckets":
-        if idx_center.size > 0:
-            f_center = _mass_factors_for_group(
-                n_group=idx_center.size,
-                spec=MASS_BUCKETS_CENTER,
-                rng=mass_rng,
-                group_indices=idx_center.copy()
-            )
-            mass_factors[idx_center] = f_center
-        if idx_periph.size > 0:
-            f_periph = _mass_factors_for_group(
-                n_group=idx_periph.size,
-                spec=MASS_BUCKETS_PERIPH,
-                rng=mass_rng,
-                group_indices=idx_periph.copy()
-            )
-            mass_factors[idx_periph] = f_periph
-    elif MASS_ASSIGNMENT_MODE != "uniform":
-        warn(f"Unknown MASS_ASSIGNMENT_MODE='{MASS_ASSIGNMENT_MODE}', falling back to 'uniform'.")
+    x_factors    = np.ones(len(nodes), dtype=float)
+    mass_factors[idx_center] = c_mf; mass_factors[idx_periph] = p_mf
+    x_factors[idx_center]    = c_xf; x_factors[idx_periph]    = p_xf
 
     # --- Build P_daily pattern ---
     P_daily = []
+
+    # Precompute group mass curves if schedule enabled
+    if ENABLE_MASS_BASE_SCHEDULE:
+        # Center/periphery curves via painter
+        center_curve = paint_curve(
+            bins_per_day, base_value=float(MASS_BASE_MODE[0]),
+            segments=CENTER_MASS_SCHEDULE, mode=MASS_SCHEDULE_MODE, clip=None
+        )
+        periph_curve = paint_curve(
+            bins_per_day, base_value=float(MASS_BASE_MODE[1]),
+            segments=PERIPH_MASS_SCHEDULE, mode=MASS_SCHEDULE_MODE, clip=None
+        )
+
     for b, mday in enumerate(minutes_in_day):
-        if ENABLE_MASS_BASE_SCHEDULE and (str(MASS_SCHEDULE_MODE).lower() in ("absolute","multiplier")):
-            mass_center_bin  = float(center_mass_arr[b])
-            mass_periph_bin  = float(periph_mass_arr[b])
-            M_base_bin = np.where(
-                is_center_mask,
-                mass_center_bin,
-                mass_periph_bin
-            ).astype(float)
-        elif ENABLE_MASS_BASE_SCHEDULE and (str(MASS_TIME_MODE).lower() == "absolute"):
-            mass_center_bin  = float(_build_array_with_hold(MASS_BASE_MODE[0], CENTER_MASS_SCHEDULE, "absolute", bins_per_day, clip01=False)[b])
-            mass_periph_bin  = float(_build_array_with_hold(MASS_BASE_MODE[1], PERIPH_MASS_SCHEDULE, "absolute", bins_per_day, clip01=False)[b])
-            M_base_bin = np.where(
-                is_center_mask,
-                mass_center_bin,
-                mass_periph_bin
-            ).astype(float)
+        if ENABLE_MASS_BASE_SCHEDULE:
+            # Assign per-tile group values for this bin
+            mass_center_bin  = float(center_curve[b])
+            mass_periph_bin  = float(periph_curve[b])
+            M_base_bin = np.where(is_center_mask, mass_center_bin, mass_periph_bin).astype(float)
         else:
             M_base_bin = M_base_static
 
-        # Apply within-group mass factors (group mean preserved at 1.0)
-        M_base_bin = M_base_bin * mass_factors
+        # Apply per-tile bucket multipliers (group totals preserved since mean factor=1)
+        M_base_bin = (M_base_bin * mass_factors)
 
         P_daily.append(
             build_P_for_bin(
@@ -1599,49 +1679,32 @@ def generate():
                 M_base_vec=M_base_bin,
                 nb_idx=nb_idx,
                 nb_dist=nb_dist,
-                arr_stay_center=arr_c,
-                arr_stay_periph=arr_p,
+                arr_stay_center=arr_stay_c,   # just pass them in
+                arr_stay_periph=arr_stay_p,
                 k_in_arr=k_in_arr,
                 k_out_arr=k_out_arr,
+                radii_km=radii_km,            # new argument
             )
         )
 
-    # --- Initial state x0 (between-group from INIT_X_MODE, then within-group bucket redistribution) ---
+
+
+    # --- Initial state x0 ---
     x0 = compute_initial_state(P_daily, nodes, dfw, centers)
-    x_rng = np.random.default_rng(SEED if X_RANDOM_SEED is None else X_RANDOM_SEED)
-    if X_ASSIGNMENT_MODE == "random_buckets":
-        total_center = float(x0[idx_center].sum())
-        total_periph = float(x0[idx_periph].sum())
-        x0_new = np.zeros_like(x0)
 
-        if idx_center.size > 0 and total_center > 0.0:
-            shares_center = _x_shares_for_group(
-                total_share=total_center,
-                n_group=idx_center.size,
-                spec=X_BUCKETS_CENTER,
-                rng=x_rng,
-                group_indices=idx_center.copy()
-            )
-            x0_new[idx_center] = shares_center
-
-        if idx_periph.size > 0 and total_periph > 0.0:
-            shares_periph = _x_shares_for_group(
-                total_share=total_periph,
-                n_group=idx_periph.size,
-                spec=X_BUCKETS_PERIPH,
-                rng=x_rng,
-                group_indices=idx_periph.copy()
-            )
-            x0_new[idx_periph] = shares_periph
-
-        # Preserve total mass = 1.0 (should already hold but normalize to be safe)
-        s = x0_new.sum()
-        if s > 0:
-            x0 = x0_new / s
-        else:
-            warn("X random bucket produced zero total; falling back to original x0.")
-    elif X_ASSIGNMENT_MODE != "uniform":
-        warn(f"Unknown X_ASSIGNMENT_MODE='{X_ASSIGNMENT_MODE}', falling back to 'uniform'.")
+    # Apply x bucket factors but preserve center/periph totals
+    x0_c_total = float(x0[is_center_mask].sum())
+    x0_p_total = float(x0[~is_center_mask].sum())
+    x0_mod = x0.copy()
+    x0_mod[is_center_mask]  = x0[is_center_mask]  * x_factors[is_center_mask]
+    x0_mod[~is_center_mask] = x0[~is_center_mask] * x_factors[~is_center_mask]
+    sc_c = x0_mod[is_center_mask].sum()
+    if sc_c > 0:
+        x0_mod[is_center_mask] *= (x0_c_total / sc_c)
+    sc_p = x0_mod[~is_center_mask].sum()
+    if sc_p > 0:
+        x0_mod[~is_center_mask] *= (x0_p_total / sc_p)
+    x0 = x0_mod / (x0_mod.sum() + 1e-12)
 
     # --- Persist transitions pattern ---
     trans_npy, manifest = transitions_paths(run_paths)
@@ -1763,7 +1826,7 @@ def generate():
                     env = envelopes.get(j, {}).get(i)
                     if env is None:
                         if i == j:
-                            length_km = float(CELL_DIAG_KM_EST if SELF_DISTANCE_MODE == "single_diag" else 2.0*CELL_DIAG_KM_EST)
+                            length_km = float(2.0*CELL_DIAG_KM_EST if SELF_DISTANCE_MODE == "double_diag" else CELL_DIAG_KM_EST)
                         else:
                             if i in nb_idx[j]:
                                 rpos = int(np.where(nb_idx[j] == i)[0][0])
@@ -1776,7 +1839,7 @@ def generate():
                         length_km = float(mn + (mx - mn) * u)
                 else:
                     if i == j:
-                        length_km = float(CELL_DIAG_KM_EST if SELF_DISTANCE_MODE == "single_diag" else 2.0*CELL_DIAG_KM_EST)
+                        length_km = float(2.0*CELL_DIAG_KM_EST if SELF_DISTANCE_MODE == "double_diag" else CELL_DIAG_KM_EST)
                     else:
                         if i in nb_idx[j]:
                             rpos = int(np.where(nb_idx[j] == i)[0][0])
@@ -1787,11 +1850,11 @@ def generate():
                 length_m = float(max(0.0, length_km) * 1000.0)
 
                 out_rows.append((
-                    agent_ids[a],
-                    nodes[js_all[a]],
-                    nodes[i],
-                    int(day.strftime("%Y%m%d")),
-                    (tbin.strftime("%Y-%m-%d %H:%M:%S")),
+                    agent_ids[a],                  # PEP_ID
+                    nodes[js_all[a]],              # start_geohash5
+                    nodes[i],                      # end_geohash5
+                    int(day.strftime("%Y%m%d")),  # local_date
+                    (tbin.strftime("%Y-%m-%d %H:%M:%S")),  # local_time
                     float(length_m),
                 ))
 
@@ -1822,7 +1885,7 @@ def generate():
         od.to_csv(od_path, index=False)
         info(f"Wrote OD aggregate: {od_path}")
 
-    # --- Population snapshots & aggregates (now initial AND final) ---
+    # --- Population snapshots & aggregates (initial & final) ---
     def _counts_from_state(agent_state: np.ndarray, N: int) -> np.ndarray:
         return np.bincount(agent_state, minlength=N).astype(int)
 
@@ -1834,11 +1897,11 @@ def generate():
     centers_mask = is_center_mask
     df_tiles = pd.DataFrame({
         "geohash5": nodes,
-        "initial_count": initial_counts,
-        "initial_share": _safe_share(initial_counts, POOL_SIZE) * 100.0,
+        "initial_count": np.bincount(initial_agent_state, minlength=N).astype(int),
+        "initial_share": _safe_share(np.bincount(initial_agent_state, minlength=N).astype(int), POOL_SIZE) * 100.0,
         "final_count": final_counts,
         "final_share": _safe_share(final_counts, POOL_SIZE) * 100.0,
-        "delta_share": (_safe_share(final_counts, POOL_SIZE) - _safe_share(initial_counts, POOL_SIZE)) * 100.0,
+        "delta_share": (_safe_share(final_counts, POOL_SIZE) - _safe_share(np.bincount(initial_agent_state, minlength=N).astype(int), POOL_SIZE)) * 100.0,
         "is_center": centers_mask,
     }).sort_values(["is_center","final_count"], ascending=[False, False], ignore_index=True)
 
@@ -1857,12 +1920,13 @@ def generate():
             "delta_total_share": (fc - ic) / float(max(1, POOL_SIZE)) * 100.0
         }
 
+    init_counts_vec = np.bincount(initial_agent_state, minlength=N).astype(int)
     agg_rows = []
-    c_grp = _grp_sum(centers_mask, initial_counts, final_counts); c_grp["group"] = "center_set"
-    nc_grp = _grp_sum(~centers_mask, initial_counts, final_counts); nc_grp["group"] = "non_center"
+    c_grp = _grp_sum(centers_mask, init_counts_vec, final_counts); c_grp["group"] = "center_set"
+    nc_grp = _grp_sum(~centers_mask, init_counts_vec, final_counts); nc_grp["group"] = "non_center"
     tot_grp = {
         "group": "TOTAL",
-        "initial_count_total": int(initial_counts.sum()),
+        "initial_count_total": int(init_counts_vec.sum()),
         "initial_total_share": 100.0,
         "final_count_total": int(final_counts.sum()),
         "final_total_share": 100.0,
